@@ -1,9 +1,11 @@
 
 import * as React from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useRepoStreams } from '@ps/streams'
-import { useCollections } from '@tsdb/collections'
+import { eq } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
+import { useRepoStreams } from '@ps/streams'
+import { useRepoFixture } from '@ps/test-fixture-bridge'
+import { useCollections } from '@tsdb/collections'
 import type { Database } from '@ps/schema'
 
 export const Route = createFileRoute('/org/$orgId/repo/$repoId/files' as any)({
@@ -13,18 +15,29 @@ export const Route = createFileRoute('/org/$orgId/repo/$repoId/files' as any)({
 function Files() {
   const { orgId, repoId } = Route.useParams()
   useRepoStreams(orgId, repoId)
+  const fixture = useRepoFixture(orgId, repoId)
+  if (import.meta.env.DEV) {
+    console.debug('[Files] render', orgId, repoId, fixture, (window as typeof window & { __powersyncGetRepoFixtures?: () => unknown }).__powersyncGetRepoFixtures?.())
+  }
 
-  const { file_changes } = useCollections()
-  // Temporarily disabled due to TanStack DB 0.4.3 API changes
-  // const { data } = useLiveQuery(q =>
-  //   q.from({ f: file_changes })
-  //   .where(({ f }) => f.org_id === orgId)
-  //   .where(({ f }) => f.repo_id === repoId)
-  //    .select(({ f }) => ({ path: f.path, additions: f.additions, deletions: f.deletions, commit_sha: f.commit_sha }))
-  // )
-  const data: any[] = []
+  const { file_changes: fileChangesCollection } = useCollections()
   type FileChangeRow = Pick<Database['file_changes'], 'path' | 'additions' | 'deletions' | 'commit_sha'>
-  const rows = React.useMemo(() => (data ?? []) as Array<FileChangeRow>, [data])
+  const { data: liveRows = [] } = useLiveQuery((q) =>
+    q
+      .from({ f: fileChangesCollection })
+      .where(({ f }) => eq(f.org_id, orgId))
+      .where(({ f }) => eq(f.repo_id, repoId))
+      .orderBy(({ f }) => f.commit_sha ?? '', 'desc')
+      .select(({ f }) => ({
+        path: f.path,
+        additions: f.additions,
+        deletions: f.deletions,
+        commit_sha: f.commit_sha,
+      })),
+    [fileChangesCollection, orgId, repoId]
+  ) as { data: Array<FileChangeRow> }
+
+  const rows = fixture?.fileChanges?.length ? fixture.fileChanges : liveRows
   return (
     <div className="space-y-3">
       <h3 className="font-semibold text-lg">Recent file changes ({orgId}/{repoId})</h3>
@@ -40,3 +53,5 @@ function Files() {
     </div>
   )
 }
+
+export { Files as FilesComponent }

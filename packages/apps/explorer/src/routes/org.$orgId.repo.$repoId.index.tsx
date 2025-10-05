@@ -55,3 +55,5 @@ function RepoOverview() {
     </div>
   )
 }
+
+export { RepoOverview as RepoOverviewComponent }

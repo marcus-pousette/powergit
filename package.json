@@ -17,14 +17,16 @@
   },
   "pnpm": {
     "overrides": {
-      "@tanstack/powersync-db-collection": "github:powersync-ja/temp-tanstack-db#c887d90"
+      "@tanstack/db": "workspace:*",
+      "@tanstack/react-db": "workspace:*",
+      "@tanstack/powersync-db-collection": "workspace:*"
     }
   },
   "devDependencies": {
     "tsx": "^4.20.6"
   },
   "dependencies": {
-    "@tanstack/db": "0.4.3",
+  "@tanstack/db": "workspace:*",
     "jsonwebtoken": "^9.0.2"
   }
 }

@@ -9,6 +9,10 @@ import { PowerSyncProvider } from './ps/powersync'
 const router = createRouter({ routeTree })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  ;(window as typeof window & { __appRouter?: typeof router }).__appRouter = router
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <PowerSyncProvider>

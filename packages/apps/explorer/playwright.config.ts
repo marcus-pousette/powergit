@@ -16,6 +16,7 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   timeout: TEST_TIMEOUT_MS,
+
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
@@ -45,4 +46,5 @@ export default defineConfig({
   expect: {
     timeout: 10_000,
   },
+  workers: 1
 })

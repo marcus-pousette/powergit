@@ -4,6 +4,7 @@ import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/
 import { PowerSyncContext } from '@powersync/react'
 import { AppSchema } from './schema'
 import { Connector } from './connector'
+import { initTestFixtureBridge } from './test-fixture-bridge'
 
 const isPowerSyncDisabled = import.meta.env.VITE_POWERSYNC_DISABLED === 'true'
 const isMultiTabCapable = typeof SharedWorker !== 'undefined'
@@ -58,6 +59,10 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
       delete (window as unknown as { __powersyncDb?: PowerSyncDatabase }).__powersyncDb
     }
   }, [powerSync])
+
+  React.useEffect(() => {
+    initTestFixtureBridge()
+  }, [])
 
   return <PowerSyncContext.Provider value={powerSync}>{children}</PowerSyncContext.Provider>
 }
