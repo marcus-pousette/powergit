@@ -8,4 +8,5 @@ out
 pnpm-lock.yaml
 .env
 .env.*
+.env.local
 repo-explorer.db

@@ -3,6 +3,11 @@
   "compilerOptions": {
     "outDir": "dist",
     "baseUrl": ".",
+    "types": [
+      "vite/client",
+      "node",
+      "@playwright/test"
+    ],
     "paths": {
       "@tanstack/powersync-db-collection": [
         "./node_modules/@tanstack/powersync-db-collection/packages/powersync-db-collection/src/index.ts"
@@ -14,6 +19,8 @@
   },
   "include": [
     "src",
+    "tests",
+    "playwright.config.ts",
     "vite-env.d.ts"
   ]
 }

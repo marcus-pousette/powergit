@@ -44,8 +44,10 @@ The remote helper can call this function with `{ remoteUrl }` to exchange for a 
 
 ## Local Development
 
-1. Run `supabase start` to spin up the local stack.
-2. Deploy the edge functions from `supabase/functions/*` to the local emulator.
-3. Copy `.env.example` → `.env` and fill in the Supabase URLs/keys that the CLI prints when it boots.
-4. Start the explorer: `pnpm dev`.
-5. The connector now retrieves credentials via Supabase and pushes optimistic updates through the `powersync-upload` function.
+1. Run `pnpm dev:stack` to start the local Supabase stack (requires Supabase CLI in PATH). Ports are overridden in `supabase/config.toml` to avoid conflicts.
+2. Deploy the edge functions from `supabase/functions/*` to the local emulator (already wired into `pnpm dev:stack` once linked).
+3. Export local env overrides (see `docs/env.local.example`) so both the explorer and remote helper hit the Supabase emulator + PowerSync container.
+   - Copy the example: `cp docs/env.local.example .env.local` and tweak tokens/endpoints as needed.
+4. Start the explorer: `pnpm dev` or `pnpm --filter @app/explorer test:e2e`.
+5. When finished, run `supabase stop` to tear down the containers.
+6. The connector now retrieves credentials via Supabase and pushes optimistic updates through the `powersync-upload` function.

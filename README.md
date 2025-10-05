@@ -61,6 +61,13 @@ VITE_SUPABASE_POWERSYNC_UPLOAD_FN=powersync-upload
 VITE_POWERSYNC_DISABLED=false # set true for local testing without a backend
 ```
 
+### PowerSync raw tables
+
+- PowerSync stores sync data locally in raw SQLite tables (`refs`, `commits`, `file_changes`, `objects`) that mirror the org-scoped streams.
+- You can inspect these tables directly via the `PowerSyncDatabase` instance (e.g. `await db.query('SELECT * FROM refs')`) or through Chromium DevTools (`Application → Storage → IndexedDB → wa-sqlite`).
+- TanStack DB collections subscribe to the same tables; use `PowerSyncTransactor` or other PowerSync APIs for writes so raw tables and collection caches remain consistent.
+- When debugging, you can temporarily set `VITE_POWERSYNC_DISABLED=true` to work offline while still reading cached raw tables.
+
 ### Supabase + PowerSync
 
 - Follow the official [Supabase + PowerSync guide](https://docs.powersync.com/integration-guides/supabase-+-powersync) to provision your Supabase project and PowerSync instance.

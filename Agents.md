@@ -29,6 +29,9 @@ Key entry points:
 
 See **README.md** for how to install directly from the PR branch during development.
 
+## Agent workflow
+- While you work, keep `todo.md` up to date with progress, blockers, and next steps so the next agent has continuity.
+
 ## Remote helper (unchanged)
 Our `git-remote-powersync` supports the Git remote‑helper protocol (`capabilities`, `list`, `fetch`, `push`, `option`). It parses the org/repo slugs, resolves to IDs, and scopes all operations by `{org_id, repo_id}`.
 

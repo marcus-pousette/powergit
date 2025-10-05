@@ -1,25 +1,45 @@
 
 import { spawn } from 'node:child_process'
+import { Readable } from 'node:stream'
 import { parsePowerSyncUrl, invokeSupabaseEdgeFunction } from '@shared/core'
 import { PowerSyncRemoteClient, type FetchPackResult } from '@shared/core/node'
 
 const ZERO_SHA = '0000000000000000000000000000000000000000'
 
 interface FetchRequest { sha: string; name: string }
+interface PushRequest { src: string; dst: string; force?: boolean }
+
+interface PushFunctionResult {
+  ok?: boolean
+  message?: string
+  results?: Record<string, { status: 'ok' | 'error'; message?: string }>
+}
 
 let parsed: ReturnType<typeof parsePowerSyncUrl> | null = null
 let remote: PowerSyncRemoteClient | null = null
 let tokenPromise: Promise<string | undefined> | null = null
 let fetchBatch: FetchRequest[] = []
+let pushBatch: PushRequest[] = []
 
 function println(s: string = '') { process.stdout.write(s + '\n') }
 
 export async function runHelper() {
   initFromArgs()
-  process.stdin.setEncoding('utf8')
-  for await (const line of readLines(process.stdin)) {
+  const iterator = process.stdin[Symbol.asyncIterator]()
+  let buffer = Buffer.alloc(0)
+
+  while (true) {
+    const { line, done, nextBuffer } = await readNextLine(iterator, buffer)
+    buffer = nextBuffer
+    if (line === null) break
+
     const raw = line.replace(/\r$/, '')
     if (raw.length === 0) {
+      if (pushBatch.length > 0) {
+        await handlePush(pushBatch, buffer, iterator)
+        pushBatch = []
+        return
+      }
       if (fetchBatch.length) await flushFetchBatch()
       continue
     }
@@ -53,9 +73,8 @@ export async function runHelper() {
     }
 
     if (cmd === 'push') {
-      // TODO: integrate push pipeline once backend is ready
-      println('error push-not-implemented')
-      println('')
+      const update = parsePush(parts)
+      if (update) pushBatch.push(update)
       continue
     }
   }
@@ -209,20 +228,115 @@ async function requestSupabaseToken(details: { endpoint: string; org: string; re
   }
 }
 
-async function* readLines(stream: NodeJS.ReadableStream) {
-  let buf = ''
-  for await (const chunk of stream) {
-    buf += chunk
-    let idx
-    while ((idx = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, idx)
-      buf = buf.slice(idx + 1)
-      yield line
-    }
+function parsePush(parts: string[]): PushRequest | null {
+  if (parts.length < 2) return null
+  let src = ''
+  let dst = ''
+  let force = false
+
+  if (parts.length >= 3) {
+    src = parts[1]
+    dst = parts[2]
+  } else {
+    const payload = parts[1]
+    const splitIdx = payload.indexOf(':')
+    if (splitIdx === -1) return null
+    src = payload.slice(0, splitIdx)
+    dst = payload.slice(splitIdx + 1)
   }
-  if (buf.length > 0) yield buf
+
+  if (src.startsWith('+')) {
+    force = true
+    src = src.slice(1)
+  }
+  if (dst.startsWith('+')) {
+    force = true
+    dst = dst.slice(1)
+  }
+
+  return { src, dst, force }
+}
+
+async function handlePush(updates: PushRequest[], buffer: Buffer, iterator: AsyncIterator<Buffer>) {
+  const details = ensureRemote()
+  if (!details) {
+    for (const update of updates) println(`error ${update.dst} missing-remote`)
+    println('')
+    return
+  }
+
+  try {
+    const packData = await collectPackBuffer(buffer, iterator)
+    const result = await uploadPushPack(details, updates, packData)
+    const statuses = result.results ?? {}
+    for (const update of updates) {
+      const entry = statuses[update.dst]
+      if ((entry?.status ?? 'ok') === 'ok' && (result.ok ?? true)) {
+        println(`ok ${update.dst}`)
+      } else {
+        const message = entry?.message ?? result.message ?? 'push failed'
+        println(`error ${update.dst} ${message}`)
+      }
+    }
+    println('')
+  } catch (error) {
+    console.error(`[powersync] push failed: ${(error as Error).message}`)
+    for (const update of updates) println(`error ${update.dst} ${(error as Error).message}`)
+    println('')
+  }
+}
+async function uploadPushPack(details: { org: string; repo: string }, updates: PushRequest[], packBuffer: Buffer): Promise<PushFunctionResult> {
+  const supabaseUrl = process.env.POWERSYNC_SUPABASE_URL
+  const serviceKey = process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY
+  if (!supabaseUrl || !serviceKey) throw new Error('Supabase push configuration missing')
+  const functionName = process.env.POWERSYNC_SUPABASE_PUSH_FN ?? 'powersync-push'
+
+  const payload = {
+    org: details.org,
+    repo: details.repo,
+    updates,
+    pack: packBuffer.toString('base64'),
+    packEncoding: 'base64' as const,
+  }
+
+  return invokeSupabaseEdgeFunction<PushFunctionResult>(functionName, payload, {
+    url: supabaseUrl,
+    serviceRoleKey: serviceKey,
+  })
+}
+
+async function collectPackBuffer(initial: Buffer, iterator: AsyncIterator<Buffer>): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  if (initial.length > 0) chunks.push(Buffer.from(initial))
+  while (true) {
+    const { value, done } = await iterator.next()
+    if (done) break
+    chunks.push(Buffer.from(value as Buffer))
+  }
+  return Buffer.concat(chunks)
+}
+
+async function readNextLine(iterator: AsyncIterator<Buffer>, buffer: Buffer): Promise<{ line: string | null; done: boolean; nextBuffer: Buffer }> {
+  let working = buffer
+  while (true) {
+    const idx = working.indexOf(0x0a)
+    if (idx >= 0) {
+      const lineBuffer = working.slice(0, idx)
+      const remainder = working.slice(idx + 1)
+      return { line: lineBuffer.toString('utf8'), done: false, nextBuffer: remainder }
+    }
+    const { value, done } = await iterator.next()
+    if (done) {
+      if (working.length === 0) return { line: null, done: true, nextBuffer: Buffer.alloc(0) }
+      const line = working.toString('utf8')
+      return { line, done: true, nextBuffer: Buffer.alloc(0) }
+    }
+    working = Buffer.concat([working, value as Buffer])
+  }
 }
 
 export const __internals = {
   requestSupabaseToken,
+  uploadPushPack,
+  parsePush,
 }
