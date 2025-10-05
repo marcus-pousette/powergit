@@ -29,9 +29,6 @@ export default defineConfig({
     alias: {
       '@ps': resolveFromRoot('src/ps'),
       '@tsdb': resolveFromRoot('src/tsdb'),
-      // Mock PowerSync for build to avoid IIFE format conflicts
-      '@powersync/web': resolveFromRoot('src/mocks/powersync-web'),
-      '@powersync/react': resolveFromRoot('src/mocks/powersync-react'),
     },
   },
   optimizeDeps: {

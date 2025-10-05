@@ -6,11 +6,12 @@
 - Explorer app has stream hooks and optional Supabase-backed connector. Local `.env` now includes Supabase vars and `VITE_POWERSYNC_DISABLED` toggle to run without backend.
 - Vitest unit coverage exists for shared utilities, remote helper token fetch/push, and stream helpers. Test matrix via `pnpm test` currently green.
 - `DEV_SETUP.md` now has a concise quick-start, day-to-day command table, and cleaned testing notes to help onboard faster.
+- Explorer now uses the real `@powersync/web` + `@powersync/react` packages; the mock layer is gone, stream helpers subscribe via `syncStream`, and `pnpm --filter @app/explorer` typecheck/tests succeed.
 
 ## In-Flight / Blocked
 - Playwright end-to-end harness not implemented yet. `@playwright/test` dependency added but no config/tests. Need mocked PowerSync/Supabase layer (likely MSW or local server) before enabling CI.
 - Supabase documentation lives in `docs/supabase.md`, but explorer README references only; ensure CLI + remote helper docs link back.
-- Type-check for explorer still fails because `@tanstack/powersync-db-collection` comes from source; long term fix is to prebuild or vendor types.
+- Keep tracking upstream types for `@tanstack/powersync-db-collection`; we currently rely on a local ambient declaration.
 - Supabase edge functions still POST to stub endpoints; need to wire real PowerSync backend/S3 storage and update config guidance now that push is flowing.
 
 ## Next Steps
