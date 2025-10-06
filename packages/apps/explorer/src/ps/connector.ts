@@ -26,17 +26,36 @@ export class Connector implements PowerSyncBackendConnector {
   async uploadData(db: AbstractPowerSyncDatabase) {
     const supabase = getSupabaseClient()
     if (!supabase) return
-    const getCrudBatch = (db as unknown as { getCrudBatch?: () => Promise<any> }).getCrudBatch
-    if (!getCrudBatch) return
-    const batch = await getCrudBatch()
-    if (!batch || !Array.isArray(batch.operations) || batch.operations.length === 0) return
-    try {
-      await invokeSupabaseFunction(DEFAULT_UPLOAD_FUNCTION, { operations: batch.operations })
-      const acknowledge = (db as unknown as { acknowledgeCrudBatch?: (id: string) => Promise<void> }).acknowledgeCrudBatch
-      if (acknowledge && batch.id) await acknowledge.call(db, batch.id)
-    } catch (error) {
-      console.error('[PowerSync] failed to upload CRUD batch via Supabase', error)
-      throw error
+    while (true) {
+      const batch = await db.getCrudBatch().catch((error) => {
+        console.warn('[PowerSync] failed to fetch CRUD batch for upload', error)
+        return null
+      })
+
+      if (!batch) break
+
+      const operations = batch.crud.map((entry) => entry.toJSON())
+
+      if (operations.length === 0) {
+        try {
+          await batch.complete()
+        } catch (error) {
+          console.warn('[PowerSync] failed to acknowledge empty CRUD batch', error)
+          throw error
+        }
+        if (!batch.haveMore) break
+        continue
+      }
+
+      try {
+        await invokeSupabaseFunction(DEFAULT_UPLOAD_FUNCTION, { operations })
+        await batch.complete()
+      } catch (error) {
+        console.error('[PowerSync] failed to upload CRUD batch via Supabase', error)
+        throw error
+      }
+
+      if (!batch.haveMore) break
     }
   }
 }

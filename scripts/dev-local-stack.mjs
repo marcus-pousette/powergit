@@ -10,6 +10,11 @@ const repoRoot = resolve(__dirname, '..')
 
 const commands = [
   ['supabase', ['start'], { cwd: repoRoot }],
+  [
+    'docker',
+    ['compose', '-f', 'supabase/docker-compose.powersync.yml', 'up', '-d', '--wait'],
+    { cwd: repoRoot },
+  ],
   ['supabase', ['functions', 'deploy'], { cwd: repoRoot }],
 ]
 

@@ -1,6 +1,6 @@
 
 import { spawn } from 'node:child_process'
-import { Readable } from 'node:stream'
+import { appendFileSync } from 'node:fs'
 import { parsePowerSyncUrl, invokeSupabaseEdgeFunction as invokeSupabaseEdgeFunctionImport } from '@shared/core'
 import { PowerSyncRemoteClient, type FetchPackResult } from '@shared/core/node'
 
@@ -22,6 +22,17 @@ let fetchBatch: FetchRequest[] = []
 let pushBatch: PushRequest[] = []
 let cachedSupabaseInvoker: typeof invokeSupabaseEdgeFunctionImport | null = null
 
+const debugLogFile = process.env.POWERSYNC_HELPER_DEBUG_LOG
+
+function debugLog(message: string) {
+  if (!debugLogFile) return
+  try {
+    appendFileSync(debugLogFile, message + '\n')
+  } catch (error) {
+    console.error('[debugLogError]', (error as Error).message)
+  }
+}
+
 function println(s: string = '') { process.stdout.write(s + '\n') }
 
 export async function runHelper() {
@@ -35,9 +46,10 @@ export async function runHelper() {
     if (line === null) break
 
     const raw = line.replace(/\r$/, '')
+    debugLog(`raw:${raw}`)
     if (raw.length === 0) {
       if (pushBatch.length > 0) {
-        await handlePush(pushBatch, buffer, iterator)
+        await handlePush(pushBatch)
         pushBatch = []
         return
       }
@@ -75,6 +87,7 @@ export async function runHelper() {
 
     if (cmd === 'push') {
       const update = parsePush(parts)
+      debugLog(`parsePush parts:${JSON.stringify(parts)} update:${JSON.stringify(update)}`)
       if (update) pushBatch.push(update)
       continue
     }
@@ -188,20 +201,29 @@ function ensureRemote(): { org: string; repo: string } | null {
 
 function detectRemoteReference(parts: string[]) {
   if (parsed) return
-  const candidate = parts.find(part => part?.startsWith?.('powersync::'))
-  if (candidate) {
-    try { parsed = parsePowerSyncUrl(candidate) } catch (error) {
-      console.error(`[powersync] failed to parse remote URL: ${(error as Error).message}`)
-    }
+  for (const part of parts) {
+    if (tryParseRemote(part)) return
   }
 }
 
 function initFromArgs() {
   if (parsed) return
   const args = process.argv.slice(2)
-  const candidate = args.find(arg => arg?.startsWith?.('powersync::'))
-  if (candidate) {
-    try { parsed = parsePowerSyncUrl(candidate) } catch {}
+  for (const arg of args) {
+    if (tryParseRemote(arg)) return
+  }
+}
+
+function tryParseRemote(candidate?: string): boolean {
+  if (!candidate) return false
+  try {
+    parsed = parsePowerSyncUrl(candidate)
+    return true
+  } catch (error) {
+    if (candidate.includes('://')) {
+      console.error(`[powersync] failed to parse remote URL: ${(error as Error).message}`)
+    }
+    return false
   }
 }
 
@@ -258,7 +280,7 @@ function parsePush(parts: string[]): PushRequest | null {
   return { src, dst, force }
 }
 
-async function handlePush(updates: PushRequest[], buffer: Buffer, iterator: AsyncIterator<Buffer>) {
+async function handlePush(updates: PushRequest[]) {
   const details = ensureRemote()
   if (!details) {
     for (const update of updates) println(`error ${update.dst} missing-remote`)
@@ -267,10 +289,17 @@ async function handlePush(updates: PushRequest[], buffer: Buffer, iterator: Asyn
   }
 
   try {
-    const packData = await collectPackBuffer(buffer, iterator)
-    const result = await uploadPushPack(details, updates, packData)
+    debugLog(`handlePush updates:${updates.length}`)
+    const resolvedUpdates = await resolvePushUpdates(updates)
+    const packData = await generatePackForPush(resolvedUpdates)
+    const nonDeleteUpdates = resolvedUpdates.filter(update => update.src && update.src !== ZERO_SHA)
+    if (packData.length === 0 && nonDeleteUpdates.length > 0) {
+      throw new Error('git pack-objects produced empty pack')
+    }
+    debugLog(`packSize:${packData.length}`)
+    const result = await uploadPushPack(details, resolvedUpdates, packData)
     const statuses = result.results ?? {}
-    for (const update of updates) {
+    for (const update of resolvedUpdates) {
       const entry = statuses[update.dst]
       if ((entry?.status ?? 'ok') === 'ok' && (result.ok ?? true)) {
         println(`ok ${update.dst}`)
@@ -334,15 +363,67 @@ async function ensureSupabaseInvoker(): Promise<typeof invokeSupabaseEdgeFunctio
   return cachedSupabaseInvoker
 }
 
-async function collectPackBuffer(initial: Buffer, iterator: AsyncIterator<Buffer>): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  if (initial.length > 0) chunks.push(Buffer.from(initial))
-  while (true) {
-    const { value, done } = await iterator.next()
-    if (done) break
-    chunks.push(Buffer.from(value as Buffer))
+async function resolvePushUpdates(updates: PushRequest[]): Promise<PushRequest[]> {
+  const resolved: PushRequest[] = []
+  for (const update of updates) {
+    let src = update.src
+    if (!src || src === ZERO_SHA || src === '0') {
+      resolved.push({ ...update, src: ZERO_SHA })
+      continue
+    }
+    const sha = await resolveGitRef(src)
+    resolved.push({ ...update, src: sha })
   }
-  return Buffer.concat(chunks)
+  return resolved
+}
+
+async function resolveGitRef(ref: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn('git', ['rev-parse', ref], { stdio: ['ignore', 'pipe', 'inherit'] })
+    let output = ''
+    child.stdout.on('data', chunk => { output += chunk.toString('utf8') })
+    child.stdout.on('error', reject)
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) {
+        resolve(output.trim())
+      } else {
+        reject(new Error(`git rev-parse failed for ${ref} (exit code ${code})`))
+      }
+    })
+  })
+}
+
+async function generatePackForPush(updates: PushRequest[]): Promise<Buffer> {
+  const sources = Array.from(new Set(updates
+    .map(update => update.src)
+    .filter((src): src is string => Boolean(src && src !== ZERO_SHA))))
+  if (sources.length === 0) return Buffer.alloc(0)
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const child = spawn('git', ['pack-objects', '--stdout', '--thin', '--delta-base-offset', '--revs', '--quiet'], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      env: process.env,
+    })
+    const chunks: Buffer[] = []
+    child.stdout.on('data', chunk => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+    child.stdout.on('error', reject)
+    child.stdin.on('error', reject)
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) {
+        resolve(Buffer.concat(chunks))
+      } else {
+        reject(new Error(`git pack-objects exited with code ${code}`))
+      }
+    })
+    for (const src of sources) {
+      child.stdin.write(`${src}\n`)
+    }
+    child.stdin.end()
+  })
 }
 
 async function readNextLine(iterator: AsyncIterator<Buffer>, buffer: Buffer): Promise<{ line: string | null; done: boolean; nextBuffer: Buffer }> {
@@ -369,3 +450,4 @@ export const __internals = {
   uploadPushPack,
   parsePush,
 }
+

@@ -2,7 +2,7 @@
   "name": "powersync-git-monorepo",
   "private": true,
   "version": "0.4.0",
-  "packageManager": "pnpm@10.18.0",
+  "packageManager": "pnpm@10.18.1",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -10,6 +10,8 @@
     "build": "pnpm -r run build",
     "dev": "pnpm --filter @app/explorer dev",
     "dev:stack": "node ./scripts/dev-local-stack.mjs",
+  "seed:streams": "node ./scripts/seed-sync-rules.mjs",
+    "seed:stack": "node ./scripts/seed-local-stack.mjs",
     "lint": "pnpm -r run lint",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
@@ -20,13 +22,19 @@
       "@tanstack/db": "workspace:*",
       "@tanstack/react-db": "workspace:*",
       "@tanstack/powersync-db-collection": "workspace:*"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@powersync/better-sqlite3",
+      "@powersync/node"
+    ]
   },
   "devDependencies": {
     "tsx": "^4.20.6"
   },
   "dependencies": {
-  "@tanstack/db": "workspace:*",
-    "jsonwebtoken": "^9.0.2"
+    "@tanstack/db": "workspace:*",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0",
+    "yaml": "^2.6.0"
   }
 }

@@ -20,6 +20,12 @@
       ],
       "@tsdb/*": [
         "./src/tsdb/*"
+      ],
+      "@shared/core": [
+        "../../shared/src/index.ts"
+      ],
+      "@shared/core/*": [
+        "../../shared/src/*"
       ]
     }
   },

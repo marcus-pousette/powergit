@@ -22,3 +22,4 @@ export function parsePowerSyncUrl(url: string): ParsedPSUrl {
 }
 
 export * from './supabase.js'
+export * from './powersync/schema.js'

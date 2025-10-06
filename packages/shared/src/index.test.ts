@@ -36,7 +36,9 @@ describe('PowerSyncRemoteClient', () => {
 
     await client.listRefs('acme', 'infra')
     expect(fetchMock).toHaveBeenCalled()
-    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
+  const call = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit | undefined] | undefined
+  const requestInit = (call?.[1] ?? {}) as RequestInit
+    const headers = new Headers(requestInit.headers ?? {})
     expect(headers.get('authorization')).toBe('Bearer token-from-provider')
   })
 })

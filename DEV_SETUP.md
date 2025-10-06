@@ -118,6 +118,14 @@ VITE_POWERSYNC_DISABLED=false
 3. Export credentials so the remote helper can reach the PowerSync control plane:
    - `POWERSYNC_TOKEN` (or `POWERSYNC_REMOTE_TOKEN`)
    - `POWERSYNC_SUPABASE_REMOTE_FN` when brokering tokens via Supabase (defaults to `powersync-remote-token`)
+4. The local stack now includes Supabase **and** a PowerSync container. After running `pnpm dev:stack`, you can connect to the PowerSync API at `http://127.0.0.1:55440` (override with `POWERSYNC_PORT`). Adjust `POWERSYNC_DATABASE_URL` or other env vars in `supabase/docker-compose.powersync.yml` if you need different credentials. Bring the stream definitions online with `pnpm seed:streams`, then push test data through the CLI via `pnpm seed:stack`.
+
+5. To debug metadata locally, mirror the org-scoped streams into SQLite:
+   ```bash
+   psgit sync --db ./powersync.sqlite
+   ```
+   - Add `--remote <name>` (or `REMOTE_NAME`) to target a non-default remote.
+   - Requires a reachable PowerSync endpoint. For local dev, run `pnpm dev:stack` to let the Supabase CLI launch Supabase plus the bundled PowerSync Docker container (no extra commands required).
 
 ## Testing cheat sheet
 

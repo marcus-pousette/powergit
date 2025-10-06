@@ -10,3 +10,4 @@ pnpm-lock.yaml
 .env.*
 .env.local
 repo-explorer.db
+tmp

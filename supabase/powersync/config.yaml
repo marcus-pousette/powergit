@@ -1,0 +1,23 @@
+version: 1
+
+database:
+  connection_url: ${POWERSYNC_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:55432/postgres}
+
+sync_rules:
+  - stream: orgs/{org_id}/repos/{repo_id}/refs
+    table: refs
+    filter:
+      org_id: "{org_id}"
+      repo_id: "{repo_id}"
+
+  - stream: orgs/{org_id}/repos/{repo_id}/commits
+    table: commits
+    filter:
+      org_id: "{org_id}"
+      repo_id: "{repo_id}"
+
+  - stream: orgs/{org_id}/repos/{repo_id}/file_changes
+    table: file_changes
+    filter:
+      org_id: "{org_id}"
+      repo_id: "{repo_id}"

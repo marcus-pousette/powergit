@@ -1,10 +1,111 @@
 
-import simpleGit from 'simple-git';
+import simpleGit from 'simple-git'
+import type { PowerSyncDatabase, PowerSyncBackendConnector } from '@powersync/node'
+import { parsePowerSyncUrl, powerSyncSchemaSpec } from '@shared/core'
+import { CliPowerSyncConnector } from './powersync/connector.js'
+import { createPowerSyncDatabase, getDefaultDatabasePath, type CliDatabaseOptions } from './powersync/database.js'
+
+const STREAM_SUFFIXES = ['refs', 'commits', 'file_changes', 'objects'] as const
+
 export async function addPowerSyncRemote(dir: string, name: string, url: string) {
-  const git = simpleGit({ baseDir: dir });
-  const remotes = await git.getRemotes(true);
-  const exists = remotes.find(r => r.name === name);
-  if (!exists) await git.addRemote(name, url);
-  else await git.remote(['set-url', name, url]);
-  return true;
+  const git = simpleGit({ baseDir: dir })
+  const remotes = await git.getRemotes(true)
+  const exists = remotes.find(r => r.name === name)
+  if (!exists) await git.addRemote(name, url)
+  else await git.remote(['set-url', name, url])
+  return true
 }
+
+export interface SyncCommandOptions {
+  remoteName?: string
+  dbPath?: string
+  databaseFactory?: (options: CliDatabaseOptions) => Promise<PowerSyncDatabase>
+  connectorFactory?: () => PowerSyncBackendConnector
+}
+
+export interface SyncCommandResult {
+  org: string
+  repo: string
+  endpoint: string
+  databasePath: string
+  counts: Record<'refs' | 'commits' | 'file_changes', number>
+}
+
+export async function syncPowerSyncRepository(dir: string, options: SyncCommandOptions = {}): Promise<SyncCommandResult> {
+  const remoteName = options.remoteName ?? process.env.REMOTE_NAME ?? 'origin'
+  const git = simpleGit({ baseDir: dir })
+  const remotes = await git.getRemotes(true)
+  const remote = remotes.find(r => r.name === remoteName)
+  if (!remote) {
+    throw new Error(`Missing Git remote "${remoteName}". Use "psgit remote add powersync" first or specify --remote.`)
+  }
+
+  const candidateUrl = remote.refs.fetch || remote.refs.push
+  if (!candidateUrl) {
+    throw new Error(`Git remote "${remoteName}" does not have a fetch URL configured.`)
+  }
+
+  const { endpoint, org, repo } = parsePowerSyncUrl(candidateUrl)
+  const dbPath = options.dbPath ?? getDefaultDatabasePath()
+  const databaseFactory = options.databaseFactory ?? (async (dbOptions: CliDatabaseOptions) => createPowerSyncDatabase(dbOptions))
+  const connectorFactory = options.connectorFactory ?? (() => new CliPowerSyncConnector())
+
+  const database = await databaseFactory({ dbPath })
+  const connector = connectorFactory()
+
+  await database.connect(connector, { includeDefaultStreams: false })
+  await database.waitForReady()
+
+  const streamIds = STREAM_SUFFIXES.map((name) => `orgs/${org}/repos/${repo}/${name}`)
+  const subscriptions = await Promise.all(streamIds.map(async (id) => {
+    const stream = database.syncStream(id)
+    const subscription = await stream.subscribe()
+    return subscription
+  }))
+
+  try {
+    await Promise.all(subscriptions.map((subscription) => subscription.waitForFirstSync()))
+
+    const counts = await collectTableCounts(database)
+
+    return {
+      org,
+      repo,
+      endpoint,
+      databasePath: dbPath,
+      counts,
+    }
+  } finally {
+    subscriptions.forEach((subscription) => {
+      try {
+        if (typeof subscription.unsubscribe === 'function') {
+          subscription.unsubscribe()
+        }
+      } catch (error) {
+        console.warn('[psgit] failed to unsubscribe PowerSync stream', error)
+      }
+    })
+    await database.close({ disconnect: true }).catch(() => undefined)
+  }
+}
+
+async function collectTableCounts(database: PowerSyncDatabase): Promise<Record<'refs' | 'commits' | 'file_changes', number>> {
+  const targets: Array<keyof typeof powerSyncSchemaSpec> = ['refs', 'commits', 'file_changes']
+  const result: Record<'refs' | 'commits' | 'file_changes', number> = {
+    refs: 0,
+    commits: 0,
+    file_changes: 0,
+  }
+
+  for (const tableName of targets) {
+    const rows = await database.getAll<{ count: number }>(`SELECT COUNT(*) AS count FROM ${tableName}`)
+    const count = rows[0]?.count ?? 0
+    result[tableName] = count
+  }
+
+  return result
+}
+
+export * from './powersync/database.js'
+export * from './powersync/connector.js'
+export * from './powersync/schema.js'
