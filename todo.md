@@ -6,6 +6,7 @@ Create a development experience where every component—CLI, explorer, backgroun
 ---
 
 ## Agent Notes (2025-10-08)
+- Pinned workspace to `@powersync/common|node|web|react@0.0.0-dev-20251003085035` and used `pnpm.peerDependencyRules.allowedVersions` so the TanStack adapter peer constraint stays satisfied without modifying the submodule; added direct deps where needed for peer compliance.
 - Added automatic PowerSync env injection in `scripts/dev-local-stack.mjs` so `pnpm dev:stack` exports `PS_*`/`POWERSYNC_*` values needed by the config parser and seeding. Verified via `node scripts/dev-local-stack.mjs --dry-run --print-exports`.
 - Tightened `pnpm dev:stack` error handling so workspace builds and seed steps fail fast instead of logging warnings. Verified command now exits once `@pkg/cli` build fails on missing `objects` key.
 - Removed the Supabase `powersync-push` function and demo seeding hook from `pnpm dev:stack`; docs/scripts now stop short of pushing sample commits until the daemon-backed flow replaces it.

@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@powersync/node": "^0.11.1",
+    "@powersync/common": "0.0.0-dev-20251003085035",
+    "@powersync/node": "0.0.0-dev-20251003085035",
     "@shared/core": "workspace:*",
     "better-sqlite3": "^12.4.1",
     "simple-git": "^3.28.0"

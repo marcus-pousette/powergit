@@ -24,7 +24,18 @@
     "overrides": {
       "@tanstack/db": "workspace:*",
       "@tanstack/react-db": "workspace:*",
-      "@tanstack/powersync-db-collection": "workspace:*"
+      "@tanstack/powersync-db-collection": "workspace:*",
+      "@powersync/common": "0.0.0-dev-20251003085035",
+      "@powersync/node": "0.0.0-dev-20251003085035",
+      "@powersync/web": "0.0.0-dev-20251003085035",
+      "@powersync/react": "0.0.0-dev-20251003085035"
+    },
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "@powersync/common": {
+          "@tanstack/powersync-db-collection": ">=1.39.0 || =0.0.0-dev-20251003085035"
+        }
+      }
     },
     "onlyBuiltDependencies": [
       "@powersync/better-sqlite3",
