@@ -41,21 +41,19 @@ Open **Agents.md** for the architecture.
 
    This applies the SQL migration under `supabase/migrations/20241007090000_powersync_git_tables.sql`, provisioning the `refs`, `commits`, `file_changes`, and `git_packs` tables required by both the CLI and explorer.
 
-4. **Start the local services** (Supabase API, Postgres, PowerSync functions) in one terminal:
+4. **Start the local services** (Supabase API, Postgres, PowerSync daemon) in one terminal:
 
    ```bash
    pnpm dev:stack
    ```
 
-   The script listens on ports `55431-55435`, deploys edge functions under `supabase/functions`, and prints connection info. Keep this terminal running.
-
-   > Need deeper deployment guidance (e.g., Supabase Cloud, `verify_jwt`, RS256 secrets)? See [docs/supabase.md](docs/supabase.md#deploying-edge-functions) for the production playbook.
+   The script listens on ports `55431-55435`, starts Supabase + the bundled PowerSync services, and prints connection info. Keep this terminal running.
 
    > Tip: whenever you change `supabase/powersync/config.yaml` run `pnpm seed:streams` to mirror the updated sync rules into the Supabase database. The script keeps Supabase and the PowerSync container config in sync so the CLI and explorer see the same stream definitions.
 
    Command palette:
 
-   - `pnpm dev:stack stop` stops Supabase, Docker Compose, and edge functions once you're done.
+   - `pnpm dev:stack stop` stops Supabase and Docker Compose once you're done.
    - Append `-- --log` (or run `pnpm dev:stack:up`) to tee all output into `logs/dev-stack/<timestamp>.log` while still mirroring to the terminal.
    - `pnpm dev:stack:down` is a shorthand for `pnpm dev:stack stop -- --log` if you prefer the legacy alias.
    - Need a dry run? `pnpm dev:stack -- --dry-run` prints each step without executing it.
@@ -66,7 +64,7 @@ Open **Agents.md** for the architecture.
    pnpm --filter @pkg/cli login
    ```
 
-   The command contacts the `powersync-creds` edge function (using the service-role key exported by `pnpm dev:stack`) and caches the RS256 token under `~/.psgit/session.json`. Future CLI commands reuse the cached token automatically. To inspect the stored credentials or clear them, run `psgit login --manual ...` or `psgit logout`.
+   The command performs a Supabase password login (using the credentials exported by `pnpm dev:stack`) and caches the resulting JWT under `~/.psgit/session.json`. Future CLI commands reuse the cached token automatically. To inspect the stored credentials or clear them, run `psgit login --manual ...` or `psgit logout`.
 
 6. **Launch the explorer UI** in another terminal:
 
@@ -120,20 +118,18 @@ VITE_POWERSYNC_DEFAULT_REPOS=infra
 VITE_SUPABASE_URL=https://YOUR-SUPABASE-PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 VITE_SUPABASE_SCHEMA=public
-VITE_SUPABASE_POWERSYNC_CREDS_FN=powersync-creds
-VITE_SUPABASE_POWERSYNC_UPLOAD_FN=powersync-upload
 VITE_POWERSYNC_DISABLED=false
 ```
 
 ### PowerSync raw tables
 
-- PowerSync stores sync data locally in SQLite tables (`refs`, `commits`, `file_changes`, `objects`) that mirror the org-scoped streams.
-- Inspect them through `PowerSyncDatabase` (for example, `await db.query('SELECT * FROM refs')`) or via Chromium DevTools → Application → Storage → IndexedDB → `wa-sqlite`.
+- PowerSync stores sync data locally in SQLite tables (`raw_refs`, `raw_commits`, `raw_file_changes`, `raw_objects`) that mirror the org-scoped streams.
+- Inspect daemon state via CLI commands (`psgit sync`) or the Supabase writer rather than maintaining a separate CLI-managed SQLite file.
 
 ### Supabase + PowerSync backend
 
 - Follow the official [Supabase + PowerSync guide](https://docs.powersync.com/integration-guides/supabase-+-powersync) when pointing at real infrastructure.
-- Deploy edge functions referenced by `VITE_SUPABASE_POWERSYNC_CREDS_FN` and `VITE_SUPABASE_POWERSYNC_UPLOAD_FN`; the explorer uses them for credential exchange and uploading pending batches.
+- Local development no longer requires Supabase edge functions — the PowerSync daemon handles credential exchange and Supabase writes directly.
 
 ## CLI helper workflow (`psgit`)
 
@@ -145,14 +141,18 @@ VITE_POWERSYNC_DISABLED=false
    git push -u powersync main
    git clone powersync::https://YOUR-ENDPOINT/orgs/acme/repos/infra
    ```
-3. Export credentials so the remote helper can reach the PowerSync control plane:
-   - `POWERSYNC_TOKEN` (or `POWERSYNC_REMOTE_TOKEN`)
-   - `POWERSYNC_SUPABASE_REMOTE_FN` when brokering tokens via Supabase (defaults to `powersync-remote-token`)
+3. Export Supabase credentials so the daemon/CLI can log in:
+   - `POWERSYNC_SUPABASE_URL`
+   - `POWERSYNC_SUPABASE_ANON_KEY`
+   - `POWERSYNC_SUPABASE_EMAIL`
+   - `POWERSYNC_SUPABASE_PASSWORD`
+   - `POWERSYNC_SUPABASE_JWT_SECRET`
+   Then run `pnpm --filter @pkg/cli login` and the CLI will use the Supabase password flow (auto mode). Manual tokens remain available via `--manual` if you have custom infrastructure.
 4. The local stack now includes Supabase **and** a PowerSync container. After running `pnpm dev:stack`, you can connect to the PowerSync API at `http://127.0.0.1:55440` (override with `POWERSYNC_PORT`). Adjust `POWERSYNC_DATABASE_URL` or other env vars in `supabase/docker-compose.powersync.yml` if you need different credentials. Bring the stream definitions online with `pnpm seed:streams`; from there you can interact with refs/commits using the CLI or explorer as needed.
 
 5. To debug metadata locally, mirror the org-scoped streams into SQLite:
    ```bash
-   psgit sync --db ./powersync.sqlite
+  psgit sync
    ```
    - Add `--remote <name>` (or `REMOTE_NAME`) to target a non-default remote.
    - Requires a reachable PowerSync endpoint. For local dev, run `pnpm dev:stack` to let the Supabase CLI launch Supabase plus the bundled PowerSync Docker container (no extra commands required).

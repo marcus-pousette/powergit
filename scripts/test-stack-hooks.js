@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { once } from 'node:events'
@@ -6,14 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const repoRoot = resolve(__dirname, '..', '..', '..', '..')
+const repoRoot = resolve(__dirname, '..')
 const stackManagerScript = resolve(repoRoot, 'scripts', 'dev-local-stack.mjs')
-
-interface StartOptions {
-  skipSeeds?: boolean
-  skipDemoSeed?: boolean
-  skipSyncRules?: boolean
-}
 
 const DEFAULT_DAEMON_URL = process.env.POWERSYNC_DAEMON_URL ?? 'http://127.0.0.1:5030'
 const DAEMON_START_COMMAND = process.env.POWERSYNC_DAEMON_START_COMMAND ?? 'pnpm --filter @svc/daemon start'
@@ -21,12 +15,18 @@ const DAEMON_START_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_STA
 const DAEMON_SHUTDOWN_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_SHUTDOWN_TIMEOUT_MS ?? '3000', 10)
 
 let stackStarted = false
-let daemonProcess: ChildProcess | null = null
-let cachedEnv: Record<string, string> | null = null
+/** @type {import('node:child_process').ChildProcess | null} */
+let daemonProcess = null
+/** @type {Record<string, string> | null} */
+let cachedEnv = null
 let daemonUrl = DEFAULT_DAEMON_URL
 let cleanupAttached = false
 
-export async function startStack(options: StartOptions = {}): Promise<Record<string, string>> {
+/**
+ * @param {{ skipSeeds?: boolean, skipDemoSeed?: boolean, skipSyncRules?: boolean }} [options]
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function startStack(options = {}) {
   if (stackStarted && cachedEnv) {
     return { ...cachedEnv }
   }
@@ -44,6 +44,7 @@ export async function startStack(options: StartOptions = {}): Promise<Record<str
   const { stdout } = await runStackManager(args, 'start stack')
   if (previousSkip !== undefined) process.env.POWERSYNC_SKIP_BINARIES = previousSkip
   else delete process.env.POWERSYNC_SKIP_BINARIES
+
   const envFromStack = parseExportedEnv(stdout)
 
   for (const [key, value] of Object.entries(envFromStack)) {
@@ -51,8 +52,10 @@ export async function startStack(options: StartOptions = {}): Promise<Record<str
   }
 
   daemonUrl = process.env.POWERSYNC_DAEMON_URL ?? DEFAULT_DAEMON_URL
-
-  await ensureDaemonRunning()
+  const skipDaemon = process.env.POWERSYNC_TEST_SKIP_DAEMON === '1'
+  if (!skipDaemon) {
+    await ensureDaemonRunning()
+  }
 
   stackStarted = true
   cachedEnv = envFromStack
@@ -62,7 +65,7 @@ export async function startStack(options: StartOptions = {}): Promise<Record<str
   return { ...envFromStack }
 }
 
-export async function stopStack(): Promise<void> {
+export async function stopStack() {
   await stopDaemon()
 
   if (stackStarted) {
@@ -72,15 +75,15 @@ export async function stopStack(): Promise<void> {
   }
 }
 
-export function getStackEnv(): Record<string, string> | null {
+export function getStackEnv() {
   return cachedEnv ? { ...cachedEnv } : null
 }
 
-export function isStackRunning(): boolean {
+export function isStackRunning() {
   return stackStarted
 }
 
-async function ensureDaemonRunning(): Promise<void> {
+async function ensureDaemonRunning() {
   if (await isDaemonResponsive()) {
     return
   }
@@ -115,7 +118,7 @@ async function ensureDaemonRunning(): Promise<void> {
   throw new Error(`PowerSync daemon did not become ready within ${DAEMON_START_TIMEOUT_MS}ms`)
 }
 
-async function stopDaemon(): Promise<void> {
+async function stopDaemon() {
   if (!daemonProcess) return
 
   try {
@@ -135,7 +138,7 @@ async function stopDaemon(): Promise<void> {
   daemonProcess = null
 }
 
-async function isDaemonResponsive(): Promise<boolean> {
+async function isDaemonResponsive() {
   try {
     const response = await fetchWithTimeout(`${daemonUrl}/health`, {}, 1500)
     return response.ok
@@ -144,7 +147,7 @@ async function isDaemonResponsive(): Promise<boolean> {
   }
 }
 
-async function runStackManager(args: string[], label: string): Promise<{ stdout: string; stderr: string }> {
+async function runStackManager(args, label) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [stackManagerScript, ...args], {
       cwd: repoRoot,
@@ -174,10 +177,10 @@ async function runStackManager(args: string[], label: string): Promise<{ stdout:
   })
 }
 
-function parseExportedEnv(output: string): Record<string, string> {
-  const env: Record<string, string> = {}
+function parseExportedEnv(output) {
+  const env = {}
   const regex = /^export\s+([A-Z0-9_]+)=(.*)$/gm
-  let match: RegExpExecArray | null
+  let match
   while ((match = regex.exec(output)) !== null) {
     const [, key, rawValue] = match
     try {
@@ -194,7 +197,7 @@ function parseExportedEnv(output: string): Record<string, string> {
   return env
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url, init, timeoutMs) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {

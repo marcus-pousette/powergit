@@ -38,3 +38,35 @@ Our `git-remote-powersync` supports the Git remote‑helper protocol (`capabilit
 ## Explorer (web)
 Routes: `/:orgId` and `/:orgId/repo/:repoId/*`. Each route subscribes to the 4 org‑scoped streams. UI queries use **TanStack DB `useLiveQuery`** on collections (`refs`, `commits`, `file_changes`).
 
+## Daemon-first auth transition (2025-10-13)
+Goal: remove Supabase/PowerSync credential handling from the Git remote-helper entirely. The helper should only speak to the local daemon; the daemon owns PowerSync connectivity, token refresh, and Supabase write-through.
+
+### Current gaps
+- Daemon push/fetch path is incomplete; packs/refs still bypass it.
+- No interactive auth UX if the daemon lacks credentials.
+
+### Target flow
+1. **Daemon owns RPC surface**  
+   - Expose `fetchRefs`, `fetchObjects`, `pushRefs`, `enqueuePack`, `status`, etc. over localhost.  
+   - Helper invokes these RPCs only; no Supabase env vars required.
+
+2. **Interactive login for daemon**  
+   - On startup (or when tokens expire) daemon launches a browser/device-code flow to Supabase/SSO.  
+   - After user signs in, daemon caches the PowerSync token/service creds locally and marks itself “authenticated”.
+
+3. **Helper orchestration**  
+   - Helper ensures daemon is running, waits for `status` to report `ready`.  
+   - If daemon replies `auth_required`, helper prints instructions and exits (no direct login fallback).
+
+4. **CI / headless**  
+   - Provide a service-token mode (`POWERSYNC_SERVICE_KEY`) so CI can start the daemon non-interactively.  
+   - Tests should still call daemon RPCs; skip browser prompts when service credentials are present.
+
+### Work items
+- [ ] Finish daemon push path: accept Git refs + packs over RPC, write to local PowerSync DB, queue storage uploads.  
+- [ ] Wire helper commands to daemon RPCs; delete direct Supabase token logic.  
+- [ ] Implement auth UX in daemon (browser launch, PKCE, local cache, logout).  
+- [ ] Update e2e harness to start daemon + simulate interactive auth (e.g., seeded service token).  
+- [ ] Refresh docs (`DEV_SETUP.md`, `docs/supabase.md`) to describe the new flow and required environment.
+- [x] Decide whether the daemon should rely on Supabase-issued JWTs (per Supabase + PowerSync guide) or continue minting custom RS256 tokens; update auth plumbing accordingly. *(Supabase JWTs now default; RS signer removed.)*
+- [x] Provision the PowerSync service with the appropriate JWKS (or enable dev bypass) so whichever token source we pick validates locally. *(Local stack now exports HS secret + base64; service fetches Supabase JWKS automatically.)*

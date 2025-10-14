@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import { addPowerSyncRemote, syncPowerSyncRepository, seedDemoRepository } from './index.js'
-import { loginViaSupabaseFunction, loginWithExplicitToken, logout as logoutSession } from './auth/login.js'
+import { loginWithExplicitToken, loginWithSupabasePassword, logout as logoutSession } from './auth/login.js'
 
 interface LoginCliOptions {
   endpoint?: string
   token?: string
-  functionsUrl?: string
-  functionName?: string
-  serviceRoleKey?: string
   sessionPath?: string
   mode: 'auto' | 'manual'
+  supabaseEmail?: string
+  supabasePassword?: string
+  supabaseUrl?: string
+  supabaseAnonKey?: string
 }
 
 const [, , cmd, ...rest] = process.argv
@@ -25,14 +26,15 @@ async function main() {
     await addPowerSyncRemote(process.cwd(), name, url)
     console.log(`Added PowerSync remote (${name}):`, url)
   } else if (cmd === 'sync') {
-    const { remoteName, dbPath } = parseSyncArgs(rest)
+    const { remoteName } = parseSyncArgs(rest)
     const result = await syncPowerSyncRepository(process.cwd(), {
       remoteName,
-      dbPath,
     })
     console.log(`Synced PowerSync repo ${result.org}/${result.repo}`)
     console.log(`  Endpoint: ${result.endpoint}`)
-    console.log(`  Database: ${result.databasePath}`)
+    if (result.databasePath) {
+      console.log(`  Snapshot: ${result.databasePath}`)
+    }
     console.log(
       `  Rows: ${result.counts.refs} refs, ${result.counts.commits} commits, ${result.counts.file_changes} file changes, ${result.counts.objects} objects`,
     )
@@ -70,17 +72,20 @@ function parseLoginArgs(args: string[]): LoginCliOptions {
         options.token = args[++i]
         options.mode = 'manual'
         break
-      case '--function':
-        options.functionName = args[++i]
-        break
-      case '--functions-url':
-        options.functionsUrl = args[++i]
-        break
-      case '--service-role-key':
-        options.serviceRoleKey = args[++i]
-        break
       case '--session':
         options.sessionPath = args[++i]
+        break
+      case '--supabase-email':
+        options.supabaseEmail = args[++i]
+        break
+      case '--supabase-password':
+        options.supabasePassword = args[++i]
+        break
+      case '--supabase-url':
+        options.supabaseUrl = args[++i]
+        break
+      case '--supabase-anon-key':
+        options.supabaseAnonKey = args[++i]
         break
       case '--manual':
         options.mode = 'manual'
@@ -128,19 +133,54 @@ async function handleLogin(args: string[]) {
     return
   }
 
-  const result = await loginViaSupabaseFunction({
-    endpoint: options.endpoint,
-    functionsUrl: options.functionsUrl,
-    credentialFunction: options.functionName,
-    serviceRoleKey: options.serviceRoleKey,
-    sessionPath: options.sessionPath,
-  })
+  const hasSupabasePasswordConfig =
+    options.supabaseEmail != null ||
+    options.supabasePassword != null ||
+    process.env.POWERSYNC_SUPABASE_EMAIL != null ||
+    process.env.POWERSYNC_SUPABASE_PASSWORD != null ||
+    process.env.PSGIT_TEST_SUPABASE_EMAIL != null ||
+    process.env.PSGIT_TEST_SUPABASE_PASSWORD != null
 
-  console.log('✅ Retrieved PowerSync credentials via Supabase function.')
-  console.log(`   Endpoint: ${result.credentials.endpoint}`)
-  if (result.credentials.expiresAt) {
-    console.log(`   Expires:  ${result.credentials.expiresAt}`)
+  if (hasSupabasePasswordConfig) {
+    const result = await loginWithSupabasePassword({
+      endpoint: options.endpoint,
+      sessionPath: options.sessionPath,
+      supabaseEmail: options.supabaseEmail,
+      supabasePassword: options.supabasePassword,
+      supabaseUrl: options.supabaseUrl,
+      supabaseAnonKey: options.supabaseAnonKey,
+    })
+
+    console.log('✅ Retrieved PowerSync credentials via Supabase password login.')
+    console.log(`   Endpoint: ${result.credentials.endpoint}`)
+    if (result.credentials.expiresAt) {
+      console.log(`   Expires:  ${result.credentials.expiresAt}`)
+    }
+    return
   }
+
+  const hasDirectToken =
+    options.token != null ||
+    process.env.POWERSYNC_TOKEN != null ||
+    process.env.PSGIT_TEST_REMOTE_TOKEN != null
+
+  if (hasDirectToken) {
+    const result = await loginWithExplicitToken({
+      endpoint: options.endpoint,
+      token: options.token,
+      sessionPath: options.sessionPath,
+    })
+    console.log('✅ Stored PowerSync credentials from configured token.')
+    console.log(`   Endpoint: ${result.credentials.endpoint}`)
+    if (result.credentials.expiresAt) {
+      console.log(`   Expires:  ${result.credentials.expiresAt}`)
+    }
+    return
+  }
+
+  throw new Error(
+    'Automatic login requires either Supabase credentials (email/password) or a PowerSync token. Provide --token/--endpoint with --manual, or set POWERSYNC_SUPABASE_* variables for password login.',
+  )
 }
 
 async function handleLogout(args: string[]) {
@@ -165,7 +205,6 @@ async function handleLogout(args: string[]) {
 
 function parseSyncArgs(args: string[]) {
   let remoteName = process.env.REMOTE_NAME || 'origin'
-  let dbPath: string | undefined
   let positionalConsumed = false
 
   for (let i = 0; i < args.length; i++) {
@@ -179,15 +218,6 @@ function parseSyncArgs(args: string[]) {
       remoteName = next
     } else if (arg.startsWith('--remote=')) {
       remoteName = arg.split('=', 2)[1] ?? remoteName
-    } else if (arg === '--db' || arg === '--database') {
-      const next = args[++i]
-      if (!next) {
-        console.error('Missing value for --db')
-        process.exit(2)
-      }
-      dbPath = next
-    } else if (arg.startsWith('--db=')) {
-      dbPath = arg.split('=', 2)[1]
     } else if (!arg.startsWith('-') && !positionalConsumed) {
       remoteName = arg
       positionalConsumed = true
@@ -198,7 +228,7 @@ function parseSyncArgs(args: string[]) {
     }
   }
 
-  return { remoteName, dbPath }
+  return { remoteName }
 }
 
 function parseSeedArgs(args: string[]) {
@@ -217,10 +247,6 @@ function parseSeedArgs(args: string[]) {
         break
       case '--branch':
         options.branch = args[++i]
-        break
-      case '--db':
-      case '--database':
-        options.dbPath = args[++i]
         break
       case '--skip-sync':
         options.skipSync = true
@@ -253,8 +279,8 @@ function parseSeedArgs(args: string[]) {
 function printUsage() {
   console.log('psgit commands:')
   console.log('  psgit remote add powersync powersync::https://<endpoint>/orgs/<org>/repos/<repo>')
-  console.log('  psgit sync [--remote <name>] [--db <path>]')
-  console.log('  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--db <path>] [--skip-sync] [--keep-repo]')
+  console.log('  psgit sync [--remote <name>]')
+  console.log('  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo]')
   console.log('  psgit login [--manual] [--token <jwt>] [--endpoint <url>]')
   console.log('  psgit logout')
 }
@@ -264,10 +290,11 @@ function printLoginUsage() {
   console.log('  --manual                 Use manual mode (requires --token).')
   console.log('  --token <jwt>            PowerSync access token to store locally.')
   console.log('  --endpoint <url>         Override PowerSync endpoint when using --manual.')
-  console.log('  --function <name>        Supabase function to call (default powersync-creds).')
-  console.log('  --functions-url <url>    Base URL for Supabase functions.')
-  console.log('  --service-role-key <key> Supabase service role key for credential exchange.')
   console.log('  --session <path>         Override credential cache path.')
+  console.log('  --supabase-email <email> Supabase user email for password-based login.')
+  console.log('  --supabase-password <pw> Supabase user password for password-based login.')
+  console.log('  --supabase-url <url>     Override Supabase project URL for password-based login.')
+  console.log('  --supabase-anon-key <k>  Override Supabase anon/service key for password-based login.')
   console.log('  --manual / --auto        Force manual or automatic mode.')
 }
 
@@ -280,7 +307,6 @@ function printSeedUsage() {
   console.log('  --remote-url <url>     Override remote URL (defaults to POWERSYNC_SEED_REMOTE_URL).')
   console.log('  --remote, -r <name>    Override remote name (defaults to powersync).')
   console.log('  --branch <branch>      Branch to push (default main).')
-  console.log('  --db <path>            SQLite path for local snapshot (default tmp/powersync-seed.sqlite).')
   console.log('  --skip-sync            Skip local PowerSync sync after push.')
   console.log('  --keep-repo            Keep the temporary Git repository on disk.')
   console.log('  --repo-dir <path>      Use an explicit working directory and keep it after completion.')

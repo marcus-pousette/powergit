@@ -1,44 +1,40 @@
-import { invokeSupabaseEdgeFunction } from '@shared/core'
 import { extractJwtMetadata } from './token.js'
 import { clearStoredCredentials, saveStoredCredentials, type StoredCredentials } from './session.js'
 
 export interface LoginOptions {
   endpoint?: string
   token?: string
-  functionsUrl?: string
-  credentialFunction?: string
-  serviceRoleKey?: string
   sessionPath?: string
   verbose?: boolean
+  supabaseEmail?: string
+  supabasePassword?: string
+  supabaseUrl?: string
+  supabaseAnonKey?: string
 }
 
 export interface LoginResult {
   credentials: StoredCredentials
-  source: 'manual' | 'supabase-function'
+  source: 'manual' | 'supabase-password'
 }
 
-const DEFAULT_CREDENTIAL_FUNCTION = process.env.POWERSYNC_SUPABASE_CREDS_FN ?? 'powersync-creds'
-
-function inferServiceRoleKey(explicit?: string): string | undefined {
+function inferSupabaseUrl(explicit?: string): string | undefined {
   if (explicit) return explicit
-  if (process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY) {
-    return process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY
-  }
-  if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    return process.env.SUPABASE_SERVICE_ROLE_KEY
-  }
-  return undefined
+  return process.env.POWERSYNC_SUPABASE_URL ?? process.env.PSGIT_TEST_SUPABASE_URL ?? process.env.SUPABASE_URL
 }
 
-function inferFunctionsUrl(explicit?: string): string | undefined {
+function inferSupabaseAnonKey(explicit?: string): string | undefined {
   if (explicit) return explicit
-  if (process.env.POWERSYNC_SUPABASE_FUNCTIONS_URL) {
-    return process.env.POWERSYNC_SUPABASE_FUNCTIONS_URL
-  }
-  if (process.env.PSGIT_TEST_FUNCTIONS_URL) {
-    return process.env.PSGIT_TEST_FUNCTIONS_URL
-  }
-  return undefined
+  return process.env.POWERSYNC_SUPABASE_ANON_KEY ?? process.env.PSGIT_TEST_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY
+}
+
+function inferSupabaseEmail(explicit?: string): string | undefined {
+  if (explicit) return explicit
+  return process.env.POWERSYNC_SUPABASE_EMAIL ?? process.env.PSGIT_TEST_SUPABASE_EMAIL
+}
+
+function inferSupabasePassword(explicit?: string): string | undefined {
+  if (explicit) return explicit
+  return process.env.POWERSYNC_SUPABASE_PASSWORD ?? process.env.PSGIT_TEST_SUPABASE_PASSWORD
 }
 
 export async function loginWithExplicitToken(options: LoginOptions): Promise<LoginResult> {
@@ -59,40 +55,55 @@ export async function loginWithExplicitToken(options: LoginOptions): Promise<Log
   return { credentials, source: 'manual' }
 }
 
-export async function loginViaSupabaseFunction(options: LoginOptions = {}): Promise<LoginResult> {
-  const functionsUrl = inferFunctionsUrl(options.functionsUrl)
-  const serviceRoleKey = inferServiceRoleKey(options.serviceRoleKey)
-  const functionName = options.credentialFunction ?? DEFAULT_CREDENTIAL_FUNCTION
+export async function loginWithSupabasePassword(options: LoginOptions = {}): Promise<LoginResult> {
+  const supabaseUrl = inferSupabaseUrl(options.supabaseUrl)
+  const supabaseAnonKey = inferSupabaseAnonKey(options.supabaseAnonKey)
+  const email = inferSupabaseEmail(options.supabaseEmail)
+  const password = inferSupabasePassword(options.supabasePassword)
+  const endpoint = options.endpoint ?? process.env.POWERSYNC_ENDPOINT ?? process.env.PSGIT_TEST_ENDPOINT
 
-  if (!functionName) {
-    throw new Error('Credential function name is required. Set POWERSYNC_SUPABASE_CREDS_FN or pass --function.')
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Supabase URL and anon key are required for Supabase login. Set POWERSYNC_SUPABASE_URL and POWERSYNC_SUPABASE_ANON_KEY.')
   }
-  if (!functionsUrl) {
-    throw new Error('Supabase Functions URL is required. Set POWERSYNC_SUPABASE_FUNCTIONS_URL or PSGIT_TEST_FUNCTIONS_URL.')
+  if (!email || !password) {
+    throw new Error('Supabase email and password are required. Use --supabase-email/--supabase-password or set POWERSYNC_SUPABASE_EMAIL/POWERSYNC_SUPABASE_PASSWORD.')
   }
-  if (!serviceRoleKey) {
-    throw new Error('Supabase service role key is required. Set POWERSYNC_SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_ROLE_KEY.')
+  if (!endpoint) {
+    throw new Error('PowerSync endpoint is required. Set POWERSYNC_ENDPOINT or provide --endpoint.')
   }
 
-  const response = await invokeSupabaseEdgeFunction<{ endpoint: string; token: string }>(functionName, undefined, {
-    functionsBaseUrl: functionsUrl,
-    serviceRoleKey,
+  const tokenUrl = `${supabaseUrl.replace(/\/$/, '')}/auth/v1/token?grant_type=password`
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${supabaseAnonKey}`,
+    },
+    body: JSON.stringify({ email, password }),
   })
 
-  if (!response?.endpoint || !response?.token) {
-    throw new Error('Supabase credential function returned an invalid payload.')
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`Supabase login failed (${response.status} ${response.statusText}) ${text}`)
   }
 
-  const metadata = extractJwtMetadata(response.token)
+  const result = (await response.json().catch(() => ({}))) as { access_token?: string }
+  const token = result?.access_token
+  if (typeof token !== 'string' || token.length === 0) {
+    throw new Error('Supabase login response did not include an access_token.')
+  }
+
+  const metadata = extractJwtMetadata(token)
   const credentials: StoredCredentials = {
-    endpoint: response.endpoint,
-    token: response.token,
+    endpoint,
+    token,
     expiresAt: metadata.expiresAt,
     obtainedAt: metadata.issuedAt ?? new Date().toISOString(),
   }
 
   await saveStoredCredentials(credentials, options.sessionPath)
-  return { credentials, source: 'supabase-function' }
+  return { credentials, source: 'supabase-password' }
 }
 
 export async function logout(options: { sessionPath?: string } = {}) {

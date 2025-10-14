@@ -20,6 +20,7 @@ export interface DaemonServerOptions {
   listRepos?: (params: { orgId: string; limit?: number }) => Promise<RepoSummaryRow[]>;
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
   pushPack?: (params: { orgId: string; repoId: string; payload: DaemonPushRequest }) => Promise<DaemonPushResponse>;
+  getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
 }
 
 export interface DaemonServer {
@@ -134,6 +135,32 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
           .then((rows) => sendJson(res, 200, { orgId, repos: rows }))
           .catch((error) => {
             console.error('[powersync-daemon] failed to list repos', error);
+            res.statusCode = 500;
+            res.end();
+          });
+        return;
+      }
+    }
+
+    if (req.method === 'GET' && options.getRepoSummary) {
+      const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/summary$/.exec(url.pathname);
+      if (match) {
+        const [, rawOrg, rawRepo] = match;
+        const orgId = decodeURIComponent(rawOrg);
+        const repoId = decodeURIComponent(rawRepo);
+
+        Promise.resolve()
+          .then(() => options.getRepoSummary?.({ orgId, repoId }))
+          .then((summary) => {
+            if (!summary) {
+              res.statusCode = 404;
+              res.end();
+              return;
+            }
+            sendJson(res, 200, summary);
+          })
+          .catch((error) => {
+            console.error('[powersync-daemon] failed to fetch repo summary', error);
             res.statusCode = 500;
             res.end();
           });

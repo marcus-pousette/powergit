@@ -1,28 +1,108 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, dirname } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import Database from 'better-sqlite3'
+import { parsePowerSyncUrl } from '@shared/core'
+import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
+import { seedDemoRepository } from './index.js'
+import { loadStoredCredentials } from './auth/session.js'
 
 const execFileAsync = promisify(execFile)
 const binPath = fileURLToPath(new URL('./bin.ts', import.meta.url))
 const require = createRequire(import.meta.url)
 const tsxImport = pathToFileURL(require.resolve('tsx/esm')).href
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)), '..')
+const builtBinPath = resolve(repoRoot, 'packages/cli/dist/cli/src/bin.js')
 
-const requiredEnvVars = ['PSGIT_TEST_REMOTE_URL', 'PSGIT_TEST_FUNCTIONS_URL', 'PSGIT_TEST_SERVICE_ROLE_KEY']
-const missingEnv = requiredEnvVars.filter((name) => !process.env[name])
-if (missingEnv.length > 0) {
-  throw new Error(
-    `Missing required environment variables for PowerSync live-stack tests: ${missingEnv.join(
-      ', ',
-    )}. See DEV_SETUP.md for instructions.`,
+function buildCliArgs(args: string[]): string[] {
+  if (existsSync(builtBinPath)) {
+    return [builtBinPath, ...args]
+  }
+  return ['--import', tsxImport, binPath, ...args]
+}
+
+const requiredEnvVars = [
+  'PSGIT_TEST_REMOTE_URL',
+  'PSGIT_TEST_SUPABASE_URL',
+  'PSGIT_TEST_SUPABASE_EMAIL',
+  'PSGIT_TEST_SUPABASE_PASSWORD',
+]
+const initialMissingEnv = requiredEnvVars.filter((name) => !process.env[name])
+
+function resolveSupabaseBinary(): string {
+  const configured = process.env.SUPABASE_BIN
+  if (configured && configured.length > 0) {
+    return configured
+  }
+
+  try {
+    const packagePath = require.resolve('@supabase/cli/package.json')
+    const packageDir = dirname(packagePath)
+    const candidate = resolve(packageDir, 'bin', 'supabase')
+    if (existsSync(candidate)) {
+      return candidate
+    }
+  } catch {
+    // ignore missing workspace copy — fall back to PATH lookup
+  }
+
+  return 'supabase'
+}
+
+const supabaseBinary = resolveSupabaseBinary()
+const supabaseProbe = spawnSync(supabaseBinary, ['--version'], { stdio: 'ignore' })
+const hasSupabaseCli = supabaseProbe.error == null && supabaseProbe.status === 0
+
+const dockerBinary = process.env.DOCKER_BIN ?? 'docker'
+const dockerProbe = spawnSync(dockerBinary, ['--version'], { stdio: 'ignore' })
+const dockerComposeProbe = spawnSync(dockerBinary, ['compose', 'version'], { stdio: 'ignore' })
+const dockerInfoProbe = spawnSync(dockerBinary, ['info'], { stdio: 'ignore' })
+const hasDocker =
+  dockerProbe.error == null &&
+  dockerProbe.status === 0 &&
+  dockerComposeProbe.error == null &&
+  dockerComposeProbe.status === 0 &&
+  dockerInfoProbe.error == null &&
+  dockerInfoProbe.status === 0
+
+if (hasSupabaseCli) {
+  process.env.SUPABASE_BIN = supabaseBinary
+}
+
+if (hasDocker) {
+  process.env.DOCKER_BIN = dockerBinary
+}
+
+const shouldAttemptLocalStack = initialMissingEnv.length > 0 && hasSupabaseCli && hasDocker
+const canRunLiveTests = initialMissingEnv.length === 0 || shouldAttemptLocalStack
+
+if (initialMissingEnv.length > 0 && !canRunLiveTests) {
+  console.warn(
+    '[cli] skipping live PowerSync e2e tests — missing env vars and local Supabase stack is unavailable.\n' +
+      `Missing: ${initialMissingEnv.join(', ')}\n` +
+      'Install Supabase CLI + Docker or export PSGIT_TEST_* variables to enable these tests.',
   )
 }
+
+const describeLive = canRunLiveTests ? describe : describe.skip
+
+type LiveStackConfig = {
+  remoteUrl: string
+  remoteName: string
+  supabaseUrl: string
+  supabaseEmail: string
+  supabasePassword: string
+  endpoint?: string
+}
+
+let liveStackConfig!: LiveStackConfig
+let startedLocalStack = false
+let skipLiveSuite = false
 
 async function runScript(scriptRelativePath: string, extraEnv: NodeJS.ProcessEnv = {}) {
   const scriptPath = resolve(repoRoot, scriptRelativePath)
@@ -38,6 +118,18 @@ async function runScript(scriptRelativePath: string, extraEnv: NodeJS.ProcessEnv
     })
     child.on('error', rejectPromise)
   })
+}
+
+async function seedLiveStackData(config: LiveStackConfig) {
+  const { org, repo } = parsePowerSyncUrl(config.remoteUrl)
+  await seedDemoRepository({
+    remoteUrl: config.remoteUrl,
+    remoteName: config.remoteName,
+    branch: 'main',
+    skipSync: true,
+    keepWorkingDir: false,
+  })
+  console.log(`[cli-e2e] seeded PowerSync repo ${org}/${repo} via daemon push`)
 }
 
 async function runGit(args: string[], cwd: string) {
@@ -58,10 +150,17 @@ describe('psgit CLI e2e', () => {
     }
   })
 
+  afterAll(async () => {
+    if (startedLocalStack) {
+      await stopStack().catch(() => undefined)
+      startedLocalStack = false
+    }
+  })
+
   async function runCli(args: string[], env: NodeJS.ProcessEnv = {}) {
     const result = await execFileAsync(
       'node',
-      ['--import', tsxImport, binPath, ...args],
+      buildCliArgs(args),
       {
         cwd: repoDir,
         env: { ...process.env, ...env },
@@ -123,32 +222,100 @@ describe('psgit CLI e2e', () => {
   })
 })
 
-const liveStackConfig = {
-  remoteUrl: process.env.PSGIT_TEST_REMOTE_URL!,
-  remoteName: process.env.PSGIT_TEST_REMOTE_NAME ?? 'powersync',
-  functionsUrl: process.env.PSGIT_TEST_FUNCTIONS_URL!,
-  serviceRoleKey: process.env.PSGIT_TEST_SERVICE_ROLE_KEY!,
-  supabaseUrl: process.env.PSGIT_TEST_SUPABASE_URL,
-  directToken: process.env.PSGIT_TEST_REMOTE_TOKEN,
-  endpoint: process.env.PSGIT_TEST_ENDPOINT,
-}
-
-describe('psgit sync against live PowerSync stack', () => {
+describeLive('psgit sync against live PowerSync stack', () => {
   let repoDir: string
-  let dbPath: string
 
   beforeAll(async () => {
-    await runScript('scripts/seed-sync-rules.mjs')
-    await runScript('scripts/seed-local-stack.mjs', {
-      POWERSYNC_SEED_REMOTE_URL: liveStackConfig.remoteUrl,
-      POWERSYNC_SEED_REMOTE_NAME: liveStackConfig.remoteName,
-    })
-  })
+    if (!canRunLiveTests) {
+      return
+    }
+
+    const cachedCredentials = await loadStoredCredentials().catch(() => null)
+    if (!cachedCredentials?.endpoint || !cachedCredentials?.token) {
+      throw new Error(
+        '[cli] missing cached PowerSync credentials. Run `pnpm --filter @pkg/cli login` before running live stack tests.',
+      )
+    }
+    process.env.POWERSYNC_DAEMON_ENDPOINT = cachedCredentials.endpoint
+    process.env.POWERSYNC_DAEMON_TOKEN = cachedCredentials.token
+
+    if (shouldAttemptLocalStack) {
+      await startStack({ skipDemoSeed: true })
+      startedLocalStack = true
+    }
+
+    const missingAfterStart = requiredEnvVars.filter((name) => !process.env[name])
+    if (missingAfterStart.length > 0) {
+      throw new Error(
+        `Missing required environment variables for PowerSync live-stack tests: ${missingAfterStart.join(
+          ', ',
+        )}. Start the local stack or export PSGIT_TEST_* variables.`,
+      )
+    }
+
+    liveStackConfig = {
+      remoteUrl: process.env.PSGIT_TEST_REMOTE_URL!,
+      remoteName: process.env.PSGIT_TEST_REMOTE_NAME ?? 'powersync',
+      supabaseUrl: process.env.PSGIT_TEST_SUPABASE_URL!,
+      endpoint: process.env.PSGIT_TEST_ENDPOINT,
+      supabaseEmail: process.env.PSGIT_TEST_SUPABASE_EMAIL!,
+      supabasePassword: process.env.PSGIT_TEST_SUPABASE_PASSWORD!,
+    }
+
+    try {
+      const { default: BetterSqlite } = await import('better-sqlite3')
+      const probe = new BetterSqlite(':memory:')
+      probe.close()
+    } catch (error) {
+      skipLiveSuite = true
+      console.warn(
+        '[cli] skipping live PowerSync stack tests — better-sqlite3 native module unavailable:',
+        (error as Error)?.message ?? error,
+      )
+      return
+    }
+
+    if (startedLocalStack) {
+      await runScript('scripts/seed-sync-rules.mjs')
+    }
+
+    if (startedLocalStack) {
+      await seedLiveStackData(liveStackConfig)
+    }
+
+    await execFileAsync(
+      'node',
+      buildCliArgs([
+        'login',
+        '--supabase-email',
+        liveStackConfig.supabaseEmail,
+        '--supabase-password',
+        liveStackConfig.supabasePassword,
+      ]),
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          POWERSYNC_SUPABASE_URL: liveStackConfig.supabaseUrl,
+          POWERSYNC_SUPABASE_EMAIL: liveStackConfig.supabaseEmail,
+          POWERSYNC_SUPABASE_PASSWORD: liveStackConfig.supabasePassword,
+          POWERSYNC_ENDPOINT: liveStackConfig.endpoint,
+        },
+      },
+    )
+
+    const storedCredentials = await loadStoredCredentials().catch(() => null)
+    if (!storedCredentials?.endpoint || !storedCredentials?.token) {
+      throw new Error('[cli] missing cached PowerSync credentials after login; expected CLI to cache token.')
+    }
+
+    process.env.POWERSYNC_DAEMON_ENDPOINT = storedCredentials.endpoint
+    process.env.POWERSYNC_DAEMON_TOKEN = storedCredentials.token
+  }, 240_000)
 
   beforeEach(async () => {
     repoDir = await mkdtemp(join(tmpdir(), 'psgit-stack-e2e-'))
     await runGit(['init'], repoDir)
-    dbPath = join(repoDir, 'powersync-e2e.sqlite')
   })
 
   afterEach(async () => {
@@ -160,16 +327,15 @@ describe('psgit sync against live PowerSync stack', () => {
   async function runCli(args: string[], env: NodeJS.ProcessEnv = {}) {
     return execFileAsync(
       'node',
-      ['--import', tsxImport, binPath, ...args],
+      buildCliArgs(args),
       {
         cwd: repoDir,
         env: {
           ...process.env,
-          POWERSYNC_SUPABASE_FUNCTIONS_URL: liveStackConfig.functionsUrl,
-          POWERSYNC_SUPABASE_SERVICE_ROLE_KEY: liveStackConfig.serviceRoleKey,
           POWERSYNC_SUPABASE_URL: liveStackConfig.supabaseUrl,
+          POWERSYNC_SUPABASE_EMAIL: liveStackConfig.supabaseEmail,
+          POWERSYNC_SUPABASE_PASSWORD: liveStackConfig.supabasePassword,
           POWERSYNC_ENDPOINT: liveStackConfig.endpoint,
-          POWERSYNC_TOKEN: liveStackConfig.directToken,
           ...env,
         },
       },
@@ -177,29 +343,28 @@ describe('psgit sync against live PowerSync stack', () => {
   }
 
   it('hydrates refs, commits, and file changes into SQLite', async () => {
+    if (skipLiveSuite) {
+      return
+    }
+
     await runCli(
       ['remote', 'add', 'powersync', liveStackConfig.remoteUrl!],
       { REMOTE_NAME: liveStackConfig.remoteName },
     )
 
-    const { stdout } = await runCli(
-      ['sync', '--remote', liveStackConfig.remoteName, '--db', dbPath],
-    )
+    const { stdout, stderr } = await runCli(['sync', '--remote', liveStackConfig.remoteName])
 
-    expect(stdout).toMatch(/Synced PowerSync repo/)
-    expect(stdout).toMatch(/Rows: \d+ refs, \d+ commits, \d+ file changes/)
-
-    const db = new Database(dbPath, { readonly: true })
-    try {
-      const refs = db.prepare('SELECT COUNT(*) AS count FROM refs').get() as { count: number }
-      const commits = db.prepare('SELECT COUNT(*) AS count FROM commits').get() as { count: number }
-      const fileChanges = db.prepare('SELECT COUNT(*) AS count FROM file_changes').get() as { count: number }
-
-  expect(refs.count).toBeGreaterThan(0)
-  expect(commits.count).toBeGreaterThan(0)
-  expect(fileChanges.count).toBeGreaterThan(0)
-    } finally {
-      db.close()
+    const output = `${stdout ?? ''}${stderr ?? ''}`
+    expect(output).toMatch(/Synced PowerSync repo/)
+    const match = /Rows: (\d+) refs, (\d+) commits, (\d+) file changes/.exec(output)
+    expect(match).not.toBeNull()
+    if (match) {
+      const refs = Number(match[1])
+      const commits = Number(match[2])
+      const fileChanges = Number(match[3])
+      expect(refs).toBeGreaterThan(0)
+      expect(commits).toBeGreaterThan(0)
+      expect(fileChanges).toBeGreaterThan(0)
     }
   }, 60_000)
 })

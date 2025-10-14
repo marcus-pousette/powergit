@@ -3,10 +3,10 @@
   "version": "0.0.4",
   "type": "module",
   "bin": {
-    "git-remote-powersync": "dist/bin.js"
+    "git-remote-powersync": "dist/remote-helper/src/bin.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x dist/bin.js",
+    "build": "tsc -p tsconfig.json && chmod +x dist/remote-helper/src/bin.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'stub'",
     "test": "vitest run"

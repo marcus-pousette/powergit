@@ -5,7 +5,7 @@ import { DaemonPowerSyncConnector } from './connector.js';
 import { connectWithSchemaRecovery, createPowerSyncDatabase } from './database.js';
 import { ensureLocalSchema } from './local-schema.js';
 import { createDaemonServer } from './server.js';
-import { getLatestPack, listRefs, listRepos, persistPush } from './queries.js';
+import { getLatestPack, getRepoSummary, listRefs, listRepos, persistPush } from './queries.js';
 import type { PersistPushResult, PushUpdateRow } from './queries.js';
 import { SupabaseWriter } from './supabase-writer.js';
 
@@ -91,13 +91,13 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     token: config.token,
   });
 
+  await ensureLocalSchema(database);
+
   await connectWithSchemaRecovery(database, {
     connector,
     dbPath: config.dbPath,
     includeDefaultStreams: false,
   });
-
-  await ensureLocalSchema(database);
 
   const connectedAt = new Date();
   console.info('[powersync-daemon] connected to PowerSync backend');
@@ -140,6 +140,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     },
     fetchRefs: ({ orgId, repoId, limit }) => listRefs(database, { orgId, repoId, limit }),
     listRepos: ({ orgId, limit }) => listRepos(database, { orgId, limit }),
+    getRepoSummary: ({ orgId, repoId }) => getRepoSummary(database, { orgId, repoId }),
     fetchPack: async ({ orgId, repoId }) => {
       let packRow: Awaited<ReturnType<typeof getLatestPack>> = null;
       try {

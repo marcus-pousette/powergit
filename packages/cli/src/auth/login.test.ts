@@ -2,16 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { loginWithExplicitToken, loginViaSupabaseFunction, logout } from './login.js'
-import { invokeSupabaseEdgeFunction } from '@shared/core'
+import { loginWithExplicitToken, loginWithSupabasePassword, logout } from './login.js'
 
 const tempRoots: string[] = []
-
-vi.mock('@shared/core', () => ({
-  invokeSupabaseEdgeFunction: vi.fn(),
-}))
-
-const invokeSupabaseEdgeFunctionMock = invokeSupabaseEdgeFunction as unknown as ReturnType<typeof vi.fn>
 
 describe('cli auth login', () => {
   beforeEach(() => {
@@ -48,28 +41,44 @@ describe('cli auth login', () => {
     expect(typeof stored.expiresAt).toBe('string')
   })
 
-  it('calls Supabase function and stores credentials', async () => {
+  it('retrieves credentials via Supabase password login', async () => {
     const sessionPath = await createSessionPath()
     const fakeToken = [
       'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9',
       Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 1800 })).toString('base64url'),
       'signature',
     ].join('.')
-  invokeSupabaseEdgeFunctionMock.mockResolvedValue({ endpoint: 'https://svc.dev', token: fakeToken })
 
-    const result = await loginViaSupabaseFunction({
-      functionsUrl: 'http://localhost:54321/functions/v1',
-      serviceRoleKey: 'service-role',
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockResolvedValue({ access_token: fakeToken }),
+    } as unknown as Response)
+
+    const result = await loginWithSupabasePassword({
+      endpoint: 'https://powersync.dev',
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseAnonKey: 'anon-key',
+      supabaseEmail: 'user@example.com',
+      supabasePassword: 'password123',
       sessionPath,
     })
 
-  expect(invokeSupabaseEdgeFunctionMock).toHaveBeenCalledWith('powersync-creds', undefined, {
-      functionsBaseUrl: 'http://localhost:54321/functions/v1',
-      serviceRoleKey: 'service-role',
-    })
-    expect(result.credentials.endpoint).toBe('https://svc.dev')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.supabase.co/auth/v1/token?grant_type=password',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          apikey: 'anon-key',
+        }),
+      }),
+    )
+    expect(result.credentials.endpoint).toBe('https://powersync.dev')
     const stored = JSON.parse(await readFile(sessionPath, 'utf8'))
-    expect(stored.endpoint).toBe('https://svc.dev')
+    expect(stored.endpoint).toBe('https://powersync.dev')
+
+    fetchMock.mockRestore()
   })
 
   it('clears stored session on logout', async () => {

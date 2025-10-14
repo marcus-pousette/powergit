@@ -4,6 +4,12 @@ database:
   connection_url: !env PS_DATABASE_URL
   sslmode: disable
 
+replication:
+  connections:
+    - type: postgresql
+      uri: !env PS_DATABASE_URL
+      sslmode: disable
+
 storage:
   type: postgresql
   uri: !env PS_STORAGE_URI
@@ -13,24 +19,40 @@ port: !env PS_PORT
 
 client_auth:
   supabase: true
+  supabase_jwt_secret: !env PS_SUPABASE_JWT_SECRET
   audience:
     - authenticated
+  jwks:
+    keys:
+      - kty: oct
+        alg: HS256
+        k: !env PS_SUPABASE_JWT_SECRET_B64
 
 sync_rules:
   orgs/{org_id}/repos/{repo_id}/refs:
     table: refs
+    auto_subscribe: true
     filter:
       org_id: "{org_id}"
       repo_id: "{repo_id}"
 
   orgs/{org_id}/repos/{repo_id}/commits:
     table: commits
+    auto_subscribe: true
     filter:
       org_id: "{org_id}"
       repo_id: "{repo_id}"
 
   orgs/{org_id}/repos/{repo_id}/file_changes:
     table: file_changes
+    auto_subscribe: true
+    filter:
+      org_id: "{org_id}"
+      repo_id: "{repo_id}"
+
+  orgs/{org_id}/repos/{repo_id}/objects:
+    table: git_packs
+    auto_subscribe: true
     filter:
       org_id: "{org_id}"
       repo_id: "{repo_id}"

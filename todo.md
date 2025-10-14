@@ -19,6 +19,23 @@ Create a development experience where every component—CLI, explorer, backgroun
 - Wired Vitest to load `@shared/core` directly from sources and skip the Supabase-dependent git e2e helper suite when the CLI isn't available; refreshed daemon writer tests to assert raw table upserts instead of legacy `git_packs`/`refs` names so both packages' test suites pass locally.
 - Added Docker + Supabase CLI autodiscovery so the git e2e suite can launch the real local stack when the binaries (and daemon) are available, exporting `SUPABASE_BIN`/`DOCKER_BIN` via `pnpm dev:stack` for manual runs.
 
+## Agent Notes (2025-10-09)
+- CLI e2e suite now boots the local Supabase stack via the shared `test-stack-hooks` helper, seeds refs/commits directly into the Postgres raw tables, and runs the compiled CLI binary so worker paths resolve correctly.
+- Live CLI sync test auto-detects missing Docker/Supabase binaries or native `better-sqlite3` bindings and skips gracefully instead of hard failing; skip reason is logged for visibility.
+- Next: ship a reliable `better-sqlite3` build (or alternative sqlite backend) in CI/dev images so the sync assertion can execute end-to-end without falling back to the skip path.
+
+## Agent Notes (2025-10-13)
+- Verified local `better-sqlite3` rebuild; CLI/remote-helper e2e now reach PowerSync. We removed the `powersync-remote-token` signer entirely and rely on Supabase-issued HS256 JWTs.
+- Local stack now provisions a Supabase email/password automatically and exports them so the CLI/daemon can log in via the standard Supabase password flow.
+- Decision: finish the daemon-first architecture so the helper becomes authless. The daemon will own token refresh and can surface an interactive login when credentials are missing.
+- Immediate actions tracked below (add new workstream items): finish daemon RPC push/fetch, add interactive auth (browser/PKCE), remove helper’s Supabase dependency, and update CI harnesses.
+
+## Agent Notes (2025-10-18)
+- Removed the remaining Supabase edge function clients (`invokeSupabaseEdgeFunction`, browser connector hooks, CLI login flow) and replaced them with env/daemon-based credential handling. CRUD uploads now hard-fail if a caller still expects the old functions so we surface unsupported write paths immediately.
+- Deleted all edge function assets (`supabase/functions/*`, smoke script) and disabled Supabase's edge runtime in the local stack. Updated `dev-local-stack` to stop deploying functions and refreshed docs (`DEV_SETUP.md`, `docs/supabase.md`, `docs/env.local.example`) to reflect the daemon-owned flow.
+- CLI `login` no longer accepts `--functions-url` or `--service-role-key`; use Supabase password login or manual tokens. Tests were updated accordingly; the live sync e2e still times out at 60 s after the stack bootstrap (needs follow-up to stabilise the daemon push path).
+- CLI now delegates `psgit sync` to the daemon: we removed the local PowerSync database, call the daemon's new `/summary` endpoint, and print raw table counts instead of creating a SQLite snapshot. New RPCs (`/summary`) were added to the daemon and shared client; tests/docs updated accordingly.
+
 ## Target Architecture Overview
 - **Local PowerSync Daemon**: Long-lived process running on each developer machine/CI agent. Maintains a hydrated PowerSync database, exposes a local RPC API (Unix socket / localhost HTTP) for Git operations, and queues mutations.
 - **Remote Helper (CLI)**: Thin wrapper over the daemon. Ensures the daemon is running, then calls RPC endpoints for `fetch`, `push`, `ls-remote`, etc. No network calls to Supabase.
@@ -45,12 +62,18 @@ Create a development experience where every component—CLI, explorer, backgroun
 - [ ] Handle packfile uploads from the daemon (local filesystem or remote storage via signed URLs).
 - [ ] Cache auth credentials (Supabase-issued token or service token) securely; refresh automatically.
 - [ ] Provide CLI tooling for inspecting daemon logs, flushing queues, or resetting the replica.
+- [ ] Expose full Git RPC surface (`fetchRefs`, `pushRefs`, `fetchObjects`, `enqueuePack`) over localhost for the helper to consume.
+- [ ] Surface `auth_required` / `ready` status endpoints the helper can poll.
+- [ ] Implement interactive Supabase/SSO login (browser or device code) when service credentials are missing; persist tokens locally.
+- [x] Ensure PowerSync service trusts Supabase JWTs (export HS secret + base64 for local dev) so daemon-issued/ Supabase tokens succeed.
 
 ### 3. Remote Helper Refactor
 - [x] On command start, detect and launch daemon if necessary (background process with lock file / PID management).
 - [x] Replace direct Supabase edge calls with RPC calls to the daemon.
 - [ ] Adapt existing tests to run against a mock daemon endpoint.
 - [x] Support fallback messaging when daemon unavailable (e.g., instructions to restart).
+- [x] Remove Supabase credential logic (`powersync-remote-token` calls) once daemon RPCs land; helper becomes HS256-only (Supabase login).
+- [ ] Update CLI/remote-helper e2e suites to expect daemon-mediated auth (simulate service token in CI).
 
 ### 4. Packfile Upload Strategy
 - [ ] Decide between: (A) daemon uploads packs directly (using signed URLs) or (B) daemon stores pack chunks in PowerSync tables and streams them out via its Supabase writer.

@@ -1,6 +1,6 @@
 # PowerSync Git CLI (`psgit`)
 
-`psgit` is a lightweight helper that keeps your local Git repository pointed at the PowerSync remote helper **and** can hydrate a local PowerSync SQLite snapshot for offline reads. With both the CLI and the `git-remote-powersync` binary on your `PATH`, standard `git push`/`git fetch` commands flow over PowerSync with no extra flags, and `psgit sync` gives you a fast way to mirror refs/commits/file metadata into SQLite.
+`psgit` is a lightweight helper that keeps your local Git repository pointed at the PowerSync remote helper while delegating all PowerSync connectivity work to the background daemon. With both the CLI and the `git-remote-powersync` binary on your `PATH`, standard `git push`/`git fetch` commands flow over PowerSync with no extra flags, and `psgit sync` gives you a quick way to ask the daemon how many refs/commits/file changes/objects it currently has for a repo.
 
 ## Install
 
@@ -27,7 +27,7 @@ Before running commands that talk to PowerSync (for example `psgit sync`), sign 
 psgit login
 ```
 
-By default this calls the Supabase credential signer (`powersync-creds`) using the service-role key that `pnpm dev:stack` exports. The returned RS256 token is cached under `~/.psgit/session.json` and automatically reused by the CLI.
+By default this logs in to Supabase using the email/password exported by `pnpm dev:stack`. The resulting Supabase JWT is cached under `~/.psgit/session.json` and automatically reused by the CLI.
 
 Need to stash a token manually (for CI or when you already have one)?
 
@@ -90,20 +90,19 @@ Helpful scripts:
 
 Whenever you expand the CLI with new commands, remember to document them here and add coverage under `packages/cli/tests/`.
 
-## Hydrate PowerSync metadata locally
+## Inspect PowerSync metadata quickly
 
-Once a repository has a PowerSync remote configured you can mirror its refs, commits, and file metadata into a local SQLite database. This is useful for scripting, debugging the explorer, or warming TanStack DB collections.
+Once a repository has a PowerSync remote configured you can ask the daemon for the current counts of refs, commits, file changes, and objects that it is tracking for that repo:
 
 ```bash
-psgit sync --db ./powersync.sqlite
+psgit sync
 ```
 
 ### Flags
 
 - `--remote` / `-r` – pick a non-default remote name (defaults to `origin` or `REMOTE_NAME` env var).
-- `--db` / `--database` – override the SQLite file path. When omitted the CLI stores data in `~/.config/psgit/powersync.sqlite` (per `getDefaultDatabasePath`).
 
-The command subscribes to the org-scoped PowerSync streams (`refs`, `commits`, `file_changes`, `objects`), waits for the first synchronization to finish, and prints the row counts that were replicated.
+The command ensures the daemon is running (starting it if auto-start is enabled), reuses the cached credentials from `psgit login`, and makes a lightweight RPC call to the daemon. The daemon responds with counts derived from its raw tables, so the CLI no longer creates or maintains its own SQLite database file.
 
 > **When do I need Docker Compose?**
 >
@@ -117,10 +116,9 @@ When you have the local PowerSync + Supabase stack running (for example via `pnp
 | --- | --- |
 | `PSGIT_TEST_REMOTE_URL` | PowerSync remote URL (e.g. `powersync::https://localhost:8080/orgs/acme/repos/infra`). *Required to enable the test.* |
 | `PSGIT_TEST_REMOTE_NAME` | Git remote name to target (defaults to `powersync`). |
-| `PSGIT_TEST_FUNCTIONS_URL` | Base URL for Supabase edge functions (often `http://127.0.0.1:54321/functions/v1`). |
-| `PSGIT_TEST_SERVICE_ROLE_KEY` | Supabase service-role key used to invoke the functions. |
-| `PSGIT_TEST_SUPABASE_URL` | Supabase REST URL (optional; only needed when `invokeSupabaseEdgeFunction` falls back to the client). |
-| `PSGIT_TEST_REMOTE_TOKEN` | Direct PowerSync token override (optional when your credential function already returns tokens). |
+| `PSGIT_TEST_SUPABASE_URL` | Supabase REST URL (used for password login). |
+| `PSGIT_TEST_SUPABASE_EMAIL` | Supabase user email used for HS256 login. |
+| `PSGIT_TEST_SUPABASE_PASSWORD` | Supabase user password used for HS256 login. |
 | `PSGIT_TEST_ENDPOINT` | Explicit PowerSync endpoint override (optional).
 | `POWERSYNC_DATABASE_URL` | Connection string to the Supabase Postgres instance for seeding stream definitions (defaults to `postgres://postgres:postgres@127.0.0.1:55432/postgres`). |
 

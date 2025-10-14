@@ -2,22 +2,31 @@
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
+import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
-import type { PowerSyncDatabase, PowerSyncBackendConnector } from '@powersync/node'
-import { parsePowerSyncUrl } from '@shared/core'
-import { CliPowerSyncConnector } from './powersync/connector.js'
-import { createPowerSyncDatabase, getDefaultDatabasePath, type CliDatabaseOptions } from './powersync/database.js'
+import { PowerSyncRemoteClient, RAW_TABLE_SPECS, type RepoDataSummary, parsePowerSyncUrl } from '@shared/core'
+import { loadStoredCredentials, isCredentialExpired } from './auth/session.js'
 
 const STREAM_SUFFIXES = ['refs', 'commits', 'file_changes', 'objects'] as const
 type StreamSuffix = typeof STREAM_SUFFIXES[number]
 const DEFAULT_SEED_BRANCH = 'main'
 const DEFAULT_SEED_AUTHOR = { name: 'PowerSync Seed Bot', email: 'seed@powersync.test' }
 
+const DEFAULT_DAEMON_URL =
+  process.env.POWERSYNC_DAEMON_URL ??
+  process.env.POWERSYNC_DAEMON_ENDPOINT ??
+  'http://127.0.0.1:5030'
+const DAEMON_START_COMMAND = process.env.POWERSYNC_DAEMON_START_COMMAND ?? 'pnpm --filter @svc/daemon start'
+const DAEMON_AUTOSTART_DISABLED = (process.env.POWERSYNC_DAEMON_AUTOSTART ?? 'true').toLowerCase() === 'false'
+const DAEMON_START_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_START_TIMEOUT_MS ?? '7000', 10)
+const DAEMON_CHECK_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_CHECK_TIMEOUT_MS ?? '2000', 10)
+const DAEMON_START_HINT =
+  'PowerSync daemon unreachable — start it with "pnpm --filter @svc/daemon start" or point POWERSYNC_DAEMON_URL at a running instance.'
+
 export interface SeedDemoOptions {
   remoteUrl?: string
   remoteName?: string
   branch?: string
-  dbPath?: string
   skipSync?: boolean
   keepWorkingDir?: boolean
   workingDir?: string
@@ -88,17 +97,14 @@ export async function seedDemoRepository(options: SeedDemoOptions = {}): Promise
 
   let syncedDatabase: string | undefined
   if (!options.skipSync) {
-    const dbPath = options.dbPath ?? resolve(process.cwd(), 'tmp', 'powersync-seed.sqlite')
-    await mkdir(dirname(dbPath), { recursive: true })
     const result = await syncPowerSyncRepository(repoDir, {
       remoteName,
-      dbPath,
     }).catch((error: unknown) => {
       console.warn('[psgit] seed sync failed', error)
       return null
     })
     if (result?.databasePath) {
-      syncedDatabase = result.databasePath
+      syncedDatabase = result.databasePath ?? undefined
     }
   }
 
@@ -125,17 +131,16 @@ export async function addPowerSyncRemote(dir: string, name: string, url: string)
 
 export interface SyncCommandOptions {
   remoteName?: string
-  dbPath?: string
-  databaseFactory?: (options: CliDatabaseOptions) => Promise<PowerSyncDatabase>
-  connectorFactory?: () => PowerSyncBackendConnector
+  sessionPath?: string
+  daemonUrl?: string
 }
 
 export interface SyncCommandResult {
   org: string
   repo: string
   endpoint: string
-  databasePath: string
   counts: Record<StreamSuffix, number>
+  databasePath?: string | null
 }
 
 export async function syncPowerSyncRepository(dir: string, options: SyncCommandOptions = {}): Promise<SyncCommandResult> {
@@ -153,62 +158,98 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
   }
 
   const { endpoint, org, repo } = parsePowerSyncUrl(candidateUrl)
-  const dbPath = options.dbPath ?? getDefaultDatabasePath()
-  const databaseFactory = options.databaseFactory ?? (async (dbOptions: CliDatabaseOptions) => createPowerSyncDatabase(dbOptions))
-  const connectorFactory = options.connectorFactory ?? (() => new CliPowerSyncConnector())
 
-  const database = await databaseFactory({ dbPath })
-  const connector = connectorFactory()
+  const storedCredentials = await loadStoredCredentials(options.sessionPath).catch(() => null)
+  if (!storedCredentials?.endpoint || !storedCredentials?.token) {
+    throw new Error('[psgit] missing cached PowerSync credentials. Run `psgit login` before syncing.')
+  }
+  if (isCredentialExpired(storedCredentials)) {
+    throw new Error('Cached PowerSync credentials have expired. Run `psgit login` to refresh.')
+  }
 
-  await database.connect(connector, { includeDefaultStreams: false })
-  await database.waitForReady()
+  if (!process.env.POWERSYNC_DAEMON_ENDPOINT) {
+    process.env.POWERSYNC_DAEMON_ENDPOINT = storedCredentials.endpoint
+  }
+  if (!process.env.POWERSYNC_DAEMON_TOKEN) {
+    process.env.POWERSYNC_DAEMON_TOKEN = storedCredentials.token
+  }
 
-  const streamIds = STREAM_SUFFIXES.map((name) => `orgs/${org}/repos/${repo}/${name}`)
-  const subscriptions = await Promise.all(streamIds.map(async (id) => {
-    const stream = database.syncStream(id)
-    const subscription = await stream.subscribe()
-    return subscription
-  }))
+  const daemonBaseUrl = normalizeBaseUrl(options.daemonUrl ?? process.env.POWERSYNC_DAEMON_URL ?? DEFAULT_DAEMON_URL)
+  await ensureDaemonReady(daemonBaseUrl)
+
+  const client = new PowerSyncRemoteClient({
+    endpoint: daemonBaseUrl,
+    pathRouting: 'segments',
+    fetchImpl: globalThis.fetch as typeof fetch,
+  })
+
+  const summary: RepoDataSummary = await client.getRepoSummary(org, repo)
+  const counts = Object.fromEntries(
+    STREAM_SUFFIXES.map((name) => [name, summary.counts[name] ?? 0]),
+  ) as Record<StreamSuffix, number>
+
+  return {
+    org,
+    repo,
+    endpoint,
+    counts,
+    databasePath: null,
+  }
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '')
+}
+
+async function ensureDaemonReady(baseUrl: string): Promise<void> {
+  if (await isDaemonResponsive(baseUrl)) {
+    return
+  }
+
+  if (DAEMON_AUTOSTART_DISABLED) {
+    throw new Error(DAEMON_START_HINT)
+  }
 
   try {
-    await Promise.all(subscriptions.map((subscription) => subscription.waitForFirstSync()))
+    launchDaemon()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`${DAEMON_START_HINT} (${message})`)
+  }
 
-    const counts = await collectTableCounts(database)
-
-    return {
-      org,
-      repo,
-      endpoint,
-      databasePath: dbPath,
-      counts,
+  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (await isDaemonResponsive(baseUrl)) {
+      return
     }
-  } finally {
-    subscriptions.forEach((subscription) => {
-      try {
-        if (typeof subscription.unsubscribe === 'function') {
-          subscription.unsubscribe()
-        }
-      } catch (error) {
-        console.warn('[psgit] failed to unsubscribe PowerSync stream', error)
-      }
-    })
-    await database.close({ disconnect: true }).catch(() => undefined)
+    await delay(200)
+  }
+
+  throw new Error(`${DAEMON_START_HINT} (daemon start timed out)`)
+}
+
+async function isDaemonResponsive(baseUrl: string): Promise<boolean> {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), DAEMON_CHECK_TIMEOUT_MS)
+    const response = await fetch(`${baseUrl}/health`, { signal: controller.signal })
+    clearTimeout(timeout)
+    return response.ok
+  } catch {
+    return false
   }
 }
 
-async function collectTableCounts(database: PowerSyncDatabase): Promise<Record<StreamSuffix, number>> {
-  const targets: StreamSuffix[] = [...STREAM_SUFFIXES]
-  const result = Object.fromEntries(targets.map((name) => [name, 0])) as Record<StreamSuffix, number>
-
-  for (const tableName of targets) {
-    const rows = await database.getAll<{ count: number }>(`SELECT COUNT(*) AS count FROM ${tableName}`)
-    const count = rows[0]?.count ?? 0
-    result[tableName] = count
-  }
-
-  return result
+function launchDaemon(): void {
+  const child = spawn(DAEMON_START_COMMAND, {
+    shell: true,
+    detached: true,
+    stdio: 'ignore',
+    env: process.env,
+  })
+  child.unref()
 }
 
-export * from './powersync/database.js'
-export * from './powersync/connector.js'
-export * from './powersync/schema.js'
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

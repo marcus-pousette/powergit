@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 import type { PowerSyncDatabase } from '@powersync/node';
-import type { GitCommitSummary, GitPushSummary, GitRefSummary, PackRow, RefRow, RepoSummaryRow } from '@shared/core';
+import type {
+  GitCommitSummary,
+  GitPushSummary,
+  GitRefSummary,
+  PackRow,
+  RefRow,
+  RepoSummaryRow,
+  RawTableKey,
+  RawTableDefinition,
+} from '@shared/core';
+import { RAW_TABLE_SPECS } from '@shared/core';
 
 type WriteContext = Parameters<Parameters<PowerSyncDatabase['writeTransaction']>[0]>[0];
 
@@ -12,7 +22,7 @@ export interface ListRefsOptions {
 
 export async function listRefs(database: PowerSyncDatabase, options: ListRefsOptions): Promise<RefRow[]> {
   const { orgId, repoId, limit } = options;
-  const sql = `SELECT id, org_id, repo_id, name, target_sha, updated_at FROM refs WHERE org_id = ? AND repo_id = ? ORDER BY name ASC`;
+  const sql = `SELECT id, org_id, repo_id, name, target_sha, updated_at FROM raw_refs WHERE org_id = ? AND repo_id = ? ORDER BY name ASC`;
   const rows = await database.getAll<RefRow>(sql + (limit ? ' LIMIT ?' : ''), limit ? [orgId, repoId, limit] : [orgId, repoId]);
   return rows;
 }
@@ -22,9 +32,15 @@ export interface LatestPackOptions {
   repoId: string;
 }
 
+export interface RepoDataSummary {
+  orgId: string;
+  repoId: string;
+  counts: Record<RawTableKey, number>;
+}
+
 export async function getLatestPack(database: PowerSyncDatabase, options: LatestPackOptions): Promise<PackRow | null> {
   const { orgId, repoId } = options;
-  const sql = `SELECT id, org_id, repo_id, pack_oid, pack_bytes, created_at FROM objects WHERE org_id = ? AND repo_id = ? ORDER BY COALESCE(created_at, '') DESC, pack_oid DESC LIMIT 1`;
+  const sql = `SELECT id, org_id, repo_id, pack_oid, pack_bytes, created_at FROM raw_objects WHERE org_id = ? AND repo_id = ? ORDER BY COALESCE(created_at, '') DESC, pack_oid DESC LIMIT 1`;
   const row = await database.getOptional<PackRow>(sql, [orgId, repoId]);
   return row;
 }
@@ -36,7 +52,7 @@ export interface ListReposOptions {
 
 export async function listRepos(database: PowerSyncDatabase, options: ListReposOptions): Promise<RepoSummaryRow[]> {
   const { orgId, limit } = options;
-  const sql = `SELECT org_id, repo_id, COUNT(*) AS ref_count, MAX(updated_at) AS latest_ref_updated_at FROM refs WHERE org_id = ? GROUP BY org_id, repo_id ORDER BY repo_id ASC`;
+  const sql = `SELECT org_id, repo_id, COUNT(*) AS ref_count, MAX(updated_at) AS latest_ref_updated_at FROM raw_refs WHERE org_id = ? GROUP BY org_id, repo_id ORDER BY repo_id ASC`;
   const rows = await database.getAll<RepoSummaryRow>(sql + (limit ? ' LIMIT ?' : ''), limit ? [orgId, limit] : [orgId]);
   return rows.map((row) => ({
     org_id: row.org_id,
@@ -44,6 +60,21 @@ export async function listRepos(database: PowerSyncDatabase, options: ListReposO
     ref_count: Number(row.ref_count) || 0,
     latest_ref_updated_at: row.latest_ref_updated_at ?? null,
   }));
+}
+
+export async function getRepoSummary(database: PowerSyncDatabase, options: LatestPackOptions): Promise<RepoDataSummary> {
+  const { orgId, repoId } = options;
+  const counts = {} as Record<RawTableKey, number>;
+
+  for (const [key, spec] of Object.entries(RAW_TABLE_SPECS) as Array<[RawTableKey, RawTableDefinition]>) {
+    const row = await database.getOptional<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM ${spec.tableName} WHERE org_id = ? AND repo_id = ?`,
+      [orgId, repoId],
+    );
+    counts[key] = Number(row?.count ?? 0);
+  }
+
+  return { orgId, repoId, counts };
 }
 
 export interface PushUpdateRow {
@@ -126,7 +157,7 @@ export async function persistPush(database: PowerSyncDatabase, options: PersistP
     if (packBase64 && resolvedPackOid) {
       const rowId = packId(orgId, repoId, resolvedPackOid);
       await tx.execute(
-        `INSERT INTO objects (id, org_id, repo_id, pack_oid, pack_bytes, created_at)
+        `INSERT INTO raw_objects (id, org_id, repo_id, pack_oid, pack_bytes, created_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id)
          DO UPDATE SET pack_bytes = excluded.pack_bytes, created_at = excluded.created_at`,
@@ -214,12 +245,12 @@ async function applyRefUpdates(
     seenIds.push(rowId);
 
     if (!target || isZeroSha(target)) {
-      await tx.execute('DELETE FROM refs WHERE id = ?', [rowId]);
+      await tx.execute('DELETE FROM raw_refs WHERE id = ?', [rowId]);
       continue;
     }
 
     await tx.execute(
-      `INSERT INTO refs (id, org_id, repo_id, name, target_sha, updated_at)
+      `INSERT INTO raw_refs (id, org_id, repo_id, name, target_sha, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id)
        DO UPDATE SET target_sha = excluded.target_sha, updated_at = excluded.updated_at`,
@@ -233,7 +264,7 @@ async function applyRefUpdates(
       seenIds.push(headId);
     }
     await tx.execute(
-      `INSERT INTO refs (id, org_id, repo_id, name, target_sha, updated_at)
+      `INSERT INTO raw_refs (id, org_id, repo_id, name, target_sha, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id)
        DO UPDATE SET target_sha = excluded.target_sha, updated_at = excluded.updated_at`,
@@ -244,7 +275,7 @@ async function applyRefUpdates(
   if (seenIds.length > 0) {
     const placeholders = seenIds.map(() => '?').join(', ');
     await tx.execute(
-      `DELETE FROM refs WHERE org_id = ? AND repo_id = ? AND id NOT IN (${placeholders})`,
+      `DELETE FROM raw_refs WHERE org_id = ? AND repo_id = ? AND id NOT IN (${placeholders})`,
       [orgId, repoId, ...seenIds],
     );
   }
@@ -257,19 +288,19 @@ async function applyCommitUpdates(
   commits: GitCommitSummary[],
 ): Promise<void> {
   if (!commits.length) {
-    await tx.execute('DELETE FROM file_changes WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
-    await tx.execute('DELETE FROM commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM raw_file_changes WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM raw_commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
     return;
   }
 
-  await tx.execute('DELETE FROM file_changes WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
-  await tx.execute('DELETE FROM commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+  await tx.execute('DELETE FROM raw_file_changes WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+  await tx.execute('DELETE FROM raw_commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
 
   for (const commit of commits) {
     if (!commit || !commit.sha) continue;
     const commitRowId = commitId(orgId, repoId, commit.sha);
     await tx.execute(
-      `INSERT INTO commits (id, org_id, repo_id, sha, author_name, author_email, authored_at, message, tree_sha)
+      `INSERT INTO raw_commits (id, org_id, repo_id, sha, author_name, author_email, authored_at, message, tree_sha)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id)
        DO UPDATE SET author_name = excluded.author_name,
@@ -297,7 +328,7 @@ async function applyCommitUpdates(
         const deletions = Number.isFinite(file.deletions) ? Number(file.deletions) : 0;
         const fileRowId = fileChangeId(orgId, repoId, commit.sha, file.path);
         await tx.execute(
-          `INSERT INTO file_changes (id, org_id, repo_id, commit_sha, path, additions, deletions)
+          `INSERT INTO raw_file_changes (id, org_id, repo_id, commit_sha, path, additions, deletions)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id)
            DO UPDATE SET additions = excluded.additions, deletions = excluded.deletions`,

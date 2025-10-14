@@ -7,7 +7,7 @@ import { execFile, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { startStack, stopStack } from './__tests__/stack-hooks.js'
+import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
 import { getServerSupabaseClient, parsePowerSyncUrl } from '@shared/core'
 
 const execFileAsync = promisify(execFile)
@@ -50,6 +50,19 @@ const hasDocker =
   dockerInfoProbe.error == null &&
   dockerInfoProbe.status === 0
 
+let hasBetterSqlite = true
+try {
+  const BetterSqlite = requireForTests('better-sqlite3')
+  const probe = new BetterSqlite(':memory:')
+  probe.close()
+} catch (error) {
+  hasBetterSqlite = false
+  console.warn(
+    '[remote-helper] skipping git e2e tests — better-sqlite3 native module unavailable:',
+    (error as Error)?.message ?? error,
+  )
+}
+
 if (!hasSupabaseCli) {
   console.warn(
     '[remote-helper] skipping git e2e tests — Supabase CLI not found (set SUPABASE_BIN to the binary path)',
@@ -70,7 +83,7 @@ if (hasDocker) {
   process.env.DOCKER_BIN = dockerBinary
 }
 
-const describeIfSupabase = hasSupabaseCli && hasDocker ? describe : describe.skip
+const describeIfSupabase = hasSupabaseCli && hasDocker && hasBetterSqlite ? describe : describe.skip
 
 async function runGit(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
   return execFileAsync('git', args, { cwd, env })

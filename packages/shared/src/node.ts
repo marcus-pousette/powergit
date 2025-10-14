@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
-import type { RefRow } from './index.js'
+import type { RefRow, RawTableKey } from './index.js'
 
 export interface PowerSyncRemoteConfig {
   endpoint: string
@@ -52,6 +52,12 @@ export interface PushPackResult {
   message?: string
 }
 
+export interface RepoDataSummary {
+  orgId: string
+  repoId: string
+  counts: Record<RawTableKey, number>
+}
+
 interface JsonFetchPack {
   pack?: string
   packEncoding?: BufferEncoding
@@ -92,6 +98,13 @@ export class PowerSyncRemoteClient {
     if (!res.ok) throw await this.toHttpError('list refs', res)
     const data = await res.json() as { refs?: RefRow[]; head?: { target?: string | null; oid?: string | null } }
     return { refs: data.refs ?? [], head: data.head }
+  }
+
+  async getRepoSummary(org: string, repo: string): Promise<RepoDataSummary> {
+    const res = await this.request(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/summary`)
+    if (!res.ok) throw await this.toHttpError('repo summary', res)
+    const data = await res.json() as RepoDataSummary
+    return data
   }
 
   async fetchPack(params: FetchPackParams): Promise<FetchPackResult> {

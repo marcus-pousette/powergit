@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web'
+import { PowerSyncDatabase, SyncClientImplementation, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web'
 import { PowerSyncContext } from '@powersync/react'
 import { AppSchema } from './schema'
 import { Connector } from './connector'
@@ -33,7 +33,7 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
       try {
         await powerSync.init()
         if (!isPowerSyncDisabled) {
-          await powerSync.connect(connector)
+          await powerSync.connect(connector,{clientImplementation: SyncClientImplementation.RUST})
         }
       } catch (error) {
         if (!disposed) {

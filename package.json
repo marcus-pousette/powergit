@@ -2,19 +2,18 @@
   "name": "powersync-git-monorepo",
   "private": true,
   "version": "0.4.0",
-  "packageManager": "pnpm@10.18.1",
+  "packageManager": "pnpm@10.18.2",
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
     "build": "pnpm -r run build",
     "dev": "pnpm --filter @app/explorer dev",
-  "dev:stack": "node ./scripts/dev-local-stack.mjs",
-  "dev:stack:up": "node ./scripts/dev-stack-up.mjs",
-  "dev:stack:down": "node ./scripts/dev-stack-down.mjs",
-  "seed:streams": "node ./scripts/seed-sync-rules.mjs",
-  "schema:migrate": "node ./scripts/schema-to-migration.mjs && pnpx supabase db push",
-  "supabase:smoke": "node ./scripts/supabase-function-smoke.mjs",
+    "dev:stack": "node ./scripts/dev-local-stack.mjs",
+    "dev:stack:up": "node ./scripts/dev-stack-up.mjs",
+    "dev:stack:down": "node ./scripts/dev-stack-down.mjs",
+    "seed:streams": "node ./scripts/seed-sync-rules.mjs",
+    "schema:migrate": "node ./scripts/schema-to-migration.mjs && pnpx supabase db push",
     "lint": "pnpm -r run lint",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
@@ -36,8 +35,12 @@
       }
     },
     "onlyBuiltDependencies": [
+      "@journeyapps/wa-sqlite",
       "@powersync/better-sqlite3",
-      "@powersync/node"
+      "@powersync/node",
+      "@swc/core",
+      "better-sqlite3",
+      "esbuild"
     ]
   },
   "devDependencies": {
@@ -46,6 +49,8 @@
   },
   "dependencies": {
     "@tanstack/db": "workspace:*",
+    "@supabase/supabase-js": "^2.48.1",
+    "better-sqlite3": "^12.4.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.12.0",
     "yaml": "^2.6.0"

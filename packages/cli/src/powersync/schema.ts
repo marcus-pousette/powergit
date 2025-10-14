@@ -1,5 +1,5 @@
 import { Schema, Table, column } from '@powersync/node'
-import { buildPowerSyncSchema, powerSyncSchemaSpec, type PowerSyncColumnType } from '@shared/core'
+import { buildPowerSyncSchema, powerSyncSchemaSpec, RAW_TABLES_FOR_SCHEMA, type PowerSyncColumnType } from '@shared/core'
 
 const { schema, tables } = buildPowerSyncSchema<Schema, Table<any>, Pick<typeof column, 'text' | 'integer'>>({
   createSchema: (tableMap) => new Schema(tableMap as Record<string, Table<any>>),
@@ -9,6 +9,8 @@ const { schema, tables } = buildPowerSyncSchema<Schema, Table<any>, Pick<typeof 
     integer: column.integer,
   },
 })
+
+schema.withRawTables(RAW_TABLES_FOR_SCHEMA)
 
 export const AppSchema = schema
 export const PowerSyncTables = tables
