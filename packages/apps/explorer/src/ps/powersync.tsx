@@ -6,7 +6,6 @@ import { AppSchema } from './schema'
 import { Connector } from './connector'
 import { initTestFixtureBridge } from './test-fixture-bridge'
 import { useSupabaseAuth } from './auth-context'
-import { useVault } from './vault-context'
 import {
   completeDaemonDeviceLogin,
   extractDeviceChallenge,
@@ -75,7 +74,6 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
   const powerSync = React.useMemo(() => createPowerSync(), [])
   const { status, session } = useSupabaseAuth()
   const accessToken = session?.access_token ?? null
-  const { unlocked: vaultUnlocked } = useVault()
   const preferDaemon = isDaemonPreferred()
   const [daemonStatus, setDaemonStatus] = React.useState<DaemonAuthStatus | null>(null)
   const [daemonReady, setDaemonReady] = React.useState(false)
@@ -130,7 +128,6 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
 
   React.useEffect(() => {
     if (isPowerSyncDisabled) return
-    if (!vaultUnlocked) return
     if (status === 'error') return
     if (status !== 'authenticated') return
     if (!preferDaemon && !accessToken) return
@@ -167,7 +164,7 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
       disposed = true
       void closeDatabase()
     }
-  }, [powerSync, status, accessToken, vaultUnlocked, closeDatabase, preferDaemon, daemonReady])
+  }, [powerSync, status, accessToken, closeDatabase, preferDaemon, daemonReady])
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return

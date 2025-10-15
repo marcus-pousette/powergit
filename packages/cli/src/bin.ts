@@ -32,6 +32,7 @@ interface DemoSeedCommandArgs {
   skipSync?: boolean
   keepRepo?: boolean
   repoDir?: string | null
+  templateRepoUrl?: string | null | undefined
 }
 
 interface LogoutCommandArgs {
@@ -281,12 +282,16 @@ async function runDemoSeedCommand(args: DemoSeedCommandArgs) {
     skipSync: Boolean(args.skipSync),
     keepWorkingDir: args.keepRepo ?? Boolean(args.repoDir),
     workingDir: args.repoDir ?? undefined,
+    templateRepoUrl: args.templateRepoUrl === null ? null : args.templateRepoUrl ?? undefined,
   }
 
   const result = await seedDemoRepository(options)
   console.log('✅ Seeded demo repository via PowerSync remote.')
   console.log(`   Remote: ${result.remoteUrl}`)
   console.log(`   Branch: ${result.branch}`)
+  if (result.templateRepoUrl) {
+    console.log(`   Template: ${result.templateRepoUrl}`)
+  }
   if (options.keepWorkingDir && result.workingDirectory) {
     console.log(`   Temp repo kept at: ${result.workingDirectory}`)
   }
@@ -385,17 +390,25 @@ async function runLoginCommand(args: LoginCommandArgs) {
     console.warn('[psgit] Supabase credential flags are no longer supported; routing login through daemon device flow.')
   }
 
-  const loginResult = await loginWithDaemonDevice({
-    daemonUrl: args.daemonUrl,
-    endpoint: args.endpoint,
-  })
+  let observedChallenge: {
+    challengeId?: string | null
+    verificationUrl?: string | null
+    expiresAt?: string | null
+  } | null = null
+  let printedPendingPrompt = false
 
-  const explainChallenge = (prefix: string) => {
-    const challenge = loginResult.challenge
-    if (!challenge) return
+  const explainChallenge = (prefix: string, override?: typeof observedChallenge) => {
+    const challenge = override ?? observedChallenge
+    if (!challenge || !challenge.challengeId) return
     console.log(prefix)
     if (challenge.verificationUrl) {
       console.log(`   Open: ${challenge.verificationUrl}`)
+    } else {
+      const fallbackUrl = process.env.POWERSYNC_DAEMON_DEVICE_URL ?? process.env.POWERSYNC_EXPLORER_URL
+      if (fallbackUrl) {
+        const separator = fallbackUrl.includes('?') ? '&' : '?'
+        console.log(`   Open: ${fallbackUrl}${separator}device_code=${challenge.challengeId}`)
+      }
     }
     console.log(`   Device code: ${challenge.challengeId}`)
     if (challenge.expiresAt) {
@@ -403,12 +416,59 @@ async function runLoginCommand(args: LoginCommandArgs) {
     }
   }
 
+  const loginResult = await loginWithDaemonDevice({
+    daemonUrl: args.daemonUrl,
+    endpoint: args.endpoint,
+    onStatus: (status) => {
+      if (!status || status.status !== 'pending') {
+        return
+      }
+      const context =
+        status.context && typeof status.context === 'object' && !Array.isArray(status.context)
+          ? (status.context as Record<string, unknown>)
+          : {}
+      const challengeId =
+        typeof context.challengeId === 'string'
+          ? context.challengeId
+          : typeof context.deviceCode === 'string'
+            ? context.deviceCode
+            : typeof (context as { device_code?: unknown }).device_code === 'string'
+              ? (context as { device_code?: string }).device_code
+              : null
+      const verificationUrl = typeof context.verificationUrl === 'string' ? context.verificationUrl : null
+      const expiresAt = typeof context.expiresAt === 'string' ? context.expiresAt : null
+      observedChallenge = { challengeId, verificationUrl, expiresAt }
+      if (!printedPendingPrompt) {
+        if (status.reason) {
+          console.log(`Daemon requested interactive login: ${status.reason}`)
+        } else {
+          console.log('Daemon requested interactive login.')
+        }
+        explainChallenge('To finish authentication:', observedChallenge)
+        console.log('Waiting for daemon authentication to complete...')
+        printedPendingPrompt = true
+      }
+    },
+  })
+
   const initialStatus = loginResult.initialStatus
-  if (initialStatus?.status === 'pending' && initialStatus.reason) {
-    console.log(`Daemon requested interactive login: ${initialStatus.reason}`)
-  }
   if (initialStatus?.status === 'pending') {
-    explainChallenge('To finish authentication:')
+    if (initialStatus.reason && !printedPendingPrompt) {
+      console.log(`Daemon requested interactive login: ${initialStatus.reason}`)
+    }
+    if (!printedPendingPrompt) {
+      if (loginResult.challenge) {
+        explainChallenge('To finish authentication:', {
+          challengeId: loginResult.challenge.challengeId,
+          verificationUrl: loginResult.challenge.verificationUrl ?? null,
+          expiresAt: loginResult.challenge.expiresAt ?? null,
+        })
+      } else {
+        explainChallenge('To finish authentication:')
+      }
+      console.log('Waiting for daemon authentication to complete...')
+      printedPendingPrompt = true
+    }
   }
 
   const finalStatus = loginResult.finalStatus
@@ -431,7 +491,15 @@ async function runLoginCommand(args: LoginCommandArgs) {
 
   if (loginResult.timedOut) {
     const reason = finalStatus.reason ? ` (${finalStatus.reason})` : ''
-    explainChallenge('Authentication is still pending; complete the flow in your browser or Explorer.')
+    if (loginResult.challenge) {
+      explainChallenge('Authentication is still pending; complete the flow in your browser or Explorer.', {
+        challengeId: loginResult.challenge.challengeId,
+        verificationUrl: loginResult.challenge.verificationUrl ?? null,
+        expiresAt: loginResult.challenge.expiresAt ?? null,
+      })
+    } else {
+      explainChallenge('Authentication is still pending; complete the flow in your browser or Explorer.')
+    }
     throw new Error(`Timed out waiting for daemon authentication${reason}.`)
   }
 
@@ -439,7 +507,15 @@ async function runLoginCommand(args: LoginCommandArgs) {
   if (finalStatus.reason) {
     console.log(`Reason: ${finalStatus.reason}`)
   }
-  explainChallenge('Pending device challenge:')
+  if (loginResult.challenge) {
+    explainChallenge('Pending device challenge:', {
+      challengeId: loginResult.challenge.challengeId,
+      verificationUrl: loginResult.challenge.verificationUrl ?? null,
+      expiresAt: loginResult.challenge.expiresAt ?? null,
+    })
+  } else {
+    explainChallenge('Pending device challenge:')
+  }
   process.exit(1)
 }
 
@@ -501,7 +577,7 @@ function printUsage() {
   console.log('psgit commands:')
   console.log('  psgit remote add powersync powersync::https://<endpoint>/orgs/<org>/repos/<repo>')
   console.log('  psgit sync [--remote <name>]')
-  console.log('  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo]')
+  console.log('  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo] [--template-url <url>] [--no-template]')
   console.log('  psgit login [--guest] [--manual --token <jwt>] [--endpoint <url>] [--daemon-url <url>]')
   console.log('  psgit daemon stop [--daemon-url <url>] [--wait <ms>]')
   console.log('  psgit logout [--daemon-url <url>]')
@@ -516,7 +592,7 @@ function buildCli() {
       'psgit commands:\n' +
         '  psgit remote add powersync powersync::https://<endpoint>/orgs/<org>/repos/<repo>\n' +
         '  psgit sync [--remote <name>]\n' +
-        '  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo]\n' +
+        '  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo] [--template-url <url>] [--no-template]\n' +
         '  psgit login [--guest] [--manual --token <jwt>] [--endpoint <url>] [--daemon-url <url>]\n' +
         '  psgit daemon stop [--daemon-url <url>] [--wait <ms>]\n' +
         '  psgit logout [--daemon-url <url>]',
@@ -608,6 +684,15 @@ function buildCli() {
           .option('repo-dir', {
             type: 'string',
             describe: 'Explicit working directory (implies --keep-repo)',
+          })
+          .option('template-url', {
+            type: 'string',
+            describe: 'Git URL to clone as demo seed content (defaults to the PowerSync chat example)',
+          })
+          .option('no-template', {
+            type: 'boolean',
+            describe: 'Skip cloning the default template and generate a minimal sample repository instead',
+            default: false,
           }),
       async (argv) => {
         await runDemoSeedCommand({
@@ -617,6 +702,7 @@ function buildCli() {
           skipSync: argv['skip-sync'] as boolean | undefined,
           keepRepo: argv['keep-repo'] as boolean | undefined,
           repoDir: (argv['repo-dir'] as string | undefined) ?? null,
+          templateRepoUrl: argv['no-template'] ? null : ((argv['template-url'] as string | undefined) ?? undefined),
         })
       },
     )

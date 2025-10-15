@@ -17,7 +17,17 @@ Open **Agents.md** for the architecture.
 
 ## Quick start: local stack + explorer
 
-> The goal: bring up Supabase + PowerSync locally and browse data in the explorer with the fewest possible commands.
+> The goal: bring up Supabase + PowerSync locally, authenticate the daemon, seed demo data, and browse it in the explorer with the fewest possible commands.
+
+```bash
+pnpm install
+pnpm dev:stack:up
+pnpm --filter @pkg/cli login
+pnpm --filter @pkg/cli demo-seed
+pnpm dev
+```
+
+Detailed breakdown:
 
 1. **Install dependencies**
 
@@ -44,19 +54,16 @@ Open **Agents.md** for the architecture.
 4. **Start the local services** (Supabase API, Postgres, PowerSync daemon) in one terminal:
 
    ```bash
-   pnpm dev:stack
+   pnpm dev:stack:up
    ```
 
-   The script listens on ports `55431-55435`, starts Supabase + the bundled PowerSync services, and prints connection info. Keep this terminal running.
-
-   > Tip: whenever you change `supabase/powersync/config.yaml` run `pnpm seed:streams` to mirror the updated sync rules into the Supabase database. The script keeps Supabase and the PowerSync container config in sync so the CLI and explorer see the same stream definitions.
+   `dev:stack:up` tail-follows the Docker compose output and mirrors it to `logs/dev-stack/<timestamp>.log`. Prefer the short-hand `pnpm dev:stack` if you do not need log capture. Both variants listen on ports `55431-55435`, start Supabase + the bundled PowerSync services, and print connection info. Keep this terminal running.
 
    Command palette:
 
-   - `pnpm dev:stack stop` stops Supabase and Docker Compose once you're done.
-   - Append `-- --log` (or run `pnpm dev:stack:up`) to tee all output into `logs/dev-stack/<timestamp>.log` while still mirroring to the terminal.
-   - `pnpm dev:stack:down` is a shorthand for `pnpm dev:stack stop -- --log` if you prefer the legacy alias.
-   - Need a dry run? `pnpm dev:stack -- --dry-run` prints each step without executing it.
+   - `pnpm dev:stack stop` (or `pnpm dev:stack:down`) stops Supabase and Docker Compose once you're done.
+   - `pnpm dev:stack -- --dry-run` prints each step without executing it.
+   - Whenever you tweak `supabase/powersync/config.yaml`, run `pnpm seed:streams` to mirror the updated sync rules into the Supabase database so the CLI and explorer stay in sync.
 
 5. **Authenticate the daemon/CLI** so Git commands can reuse credentials:
 
@@ -64,17 +71,25 @@ Open **Agents.md** for the architecture.
    pnpm --filter @pkg/cli login
    ```
 
-   The command now initiates a **device flow**. It prints a device code (and, when `POWERSYNC_DAEMON_DEVICE_URL` is set, a verification URL) and waits for the daemon to receive a Supabase token. Open the explorer at the printed URL (or visit `http://localhost:5173/auth?device_code=…` manually), sign in with the Supabase user exported by `pnpm dev:stack`, and the explorer will hand the fresh Supabase token to the daemon automatically. Once the CLI reports `PowerSync daemon authenticated successfully`, it is safe to close the browser tab. Future CLI commands reuse the daemon’s cached credentials; clear them with `psgit logout`.
+   The command initiates a **device flow**. It prints a device code (and, when `POWERSYNC_DAEMON_DEVICE_URL` is set, a verification URL) and waits for the daemon to receive a Supabase token. Open the explorer at the printed URL (or visit `http://localhost:5783/auth?device_code=…` manually), sign in with the Supabase user exported by `pnpm dev:stack`, and the explorer will hand the fresh Supabase token to the daemon automatically. Once the CLI reports `PowerSync daemon authenticated successfully`, you can close the browser tab. Subsequent CLI commands reuse the daemon’s cached credentials; clear them with `psgit logout`.
 
-6. **Launch the explorer UI** in another terminal:
+6. **Seed a demo repository** (optional but recommended for a quick tour):
+
+   ```bash
+   pnpm --filter @pkg/cli demo-seed
+   ```
+
+   By default this clones [`powersync-community/react-supabase-chat-e2ee`](https://github.com/powersync-community/react-supabase-chat-e2ee) into a temporary Git repo, commits the tree, and pushes it through the PowerSync remote helper so the daemon/Explorer have something interesting to show. Pass `--template-url <git-url>` to seed a different project or `--no-template` to fall back to the minimal sample used previously.
+
+7. **Launch the explorer UI** in another terminal:
 
    ```bash
    pnpm dev
    ```
 
-   Vite serves `http://localhost:5173`. The explorer picks up `.env.local`, connects to the local Supabase + PowerSync stack, and streams org/repo data into TanStack DB. Set `VITE_POWERSYNC_DISABLED=true` to work fully offline with cached data.
+   The command auto-loads `.env.powersync-stack`, so the explorer connects to the local Supabase + PowerSync stack without extra setup. Vite serves `http://localhost:5783` and the home screen lists every org the daemon has replicated (including the demo seed above). Use `pnpm --filter @app/explorer dev:remote` if you need to point the explorer at a hosted Supabase project instead. Set `VITE_POWERSYNC_DISABLED=true` to work fully offline with cached data.
 
-7. **Stop everything** with <kbd>Ctrl</kbd>+<kbd>C</kbd> in both terminals when you wrap up.
+8. **Stop everything** with <kbd>Ctrl</kbd>+<kbd>C</kbd> in both terminals when you wrap up, then run `pnpm dev:stack stop` if you launched the services with `dev:stack:up`.
 
 ### Validate against a hosted Supabase instance
 

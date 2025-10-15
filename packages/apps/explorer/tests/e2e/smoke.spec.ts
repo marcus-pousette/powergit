@@ -51,45 +51,10 @@ test.describe('Explorer repo lists', () => {
     await installSupabaseMock(page, { authenticated: true })
 
     await page.goto(`${BASE_URL}/`)
-    if (page.url().endsWith('/auth')) {
-      throw new Error('Supabase mock failed to provide authenticated session')
+    if (!page.url().endsWith('/')) {
+      throw new Error(`Expected to land on explorer home, current URL: ${page.url()}`)
     }
-
-    if (page.url().startsWith(`${BASE_URL}/vault`)) {
-      await expect(page.getByTestId('vault-heading')).toBeVisible()
-      await page.waitForFunction(() => {
-        const global = window as typeof window & { __vaultControls?: { status: string } }
-        return global.__vaultControls && global.__vaultControls.status !== 'loading'
-      })
-      await page.evaluate(async ({ passphrase }) => {
-        const global = window as typeof window & {
-          __vaultControls?: {
-            status: string
-            createVault: (phrase: string) => Promise<void>
-            unlockVault: (phrase: string) => Promise<void>
-          }
-        }
-        const controls = global.__vaultControls
-        if (!controls) {
-          throw new Error('Vault controls unavailable in test environment')
-        }
-        if (controls.status === 'loading') {
-          return
-        }
-        if (controls.status === 'needsSetup') {
-          await controls.createVault(passphrase)
-        } else if (controls.status === 'locked') {
-          await controls.unlockVault(passphrase)
-        }
-      }, { passphrase: 'correct-horse-battery-staple' })
-      await page.waitForFunction(() => {
-        const global = window as typeof window & { __vaultControls?: { status: string } }
-        return global.__vaultControls?.status === 'unlocked'
-      })
-      await page.waitForFunction(() => window.location.pathname === '/')
-    }
-
-    await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Your PowerSync Repositories' })).toBeVisible()
   })
 
   test.afterEach(async ({ page }) => {

@@ -2,12 +2,40 @@ import { createClient, type Session, type SupabaseClient } from '@supabase/supab
 
 let cachedClient: SupabaseClient | null = null
 
+const FALLBACK_ENV_KEYS: Record<string, string[]> = {
+  VITE_SUPABASE_URL: ['POWERSYNC_SUPABASE_URL', 'PSGIT_TEST_SUPABASE_URL'],
+  VITE_SUPABASE_ANON_KEY: ['POWERSYNC_SUPABASE_ANON_KEY', 'PSGIT_TEST_SUPABASE_ANON_KEY'],
+  VITE_SUPABASE_SCHEMA: ['POWERSYNC_SUPABASE_SCHEMA'],
+  VITE_POWERSYNC_ENDPOINT: ['POWERSYNC_ENDPOINT', 'PSGIT_TEST_ENDPOINT'],
+}
+
+const FALLBACK_DEFAULTS: Record<string, string> = {
+  VITE_SUPABASE_URL: 'http://127.0.0.1:55431',
+  VITE_SUPABASE_ANON_KEY:
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0',
+  VITE_POWERSYNC_ENDPOINT: 'http://127.0.0.1:55440',
+  POWERSYNC_DAEMON_DEVICE_URL: 'http://localhost:5783/auth',
+}
+
 function readEnv(name: string): string | null {
   const env = import.meta.env as Record<string, string | undefined>
-  const value = env[name]
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
+  const runtimeEnv = ((globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process?.env) ?? {}
+
+  const candidates: Array<string | undefined> = [env?.[name], runtimeEnv?.[name]]
+  const fallbacks = FALLBACK_ENV_KEYS[name] ?? []
+  for (const fallbackKey of fallbacks) {
+    candidates.push(env?.[fallbackKey], runtimeEnv?.[fallbackKey])
+  }
+  candidates.push(FALLBACK_DEFAULTS[name])
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const trimmed = candidate.trim()
+    if (trimmed.length > 0) {
+      return trimmed
+    }
+  }
+  return null
 }
 
 function getInjectedSupabase(): SupabaseClient | null {
@@ -101,16 +129,15 @@ export async function signOut(): Promise<void> {
 export async function signInAnonymously(): Promise<void> {
   const client = getSupabase()
   if (!client) throw new Error('Supabase is not configured for this environment.')
-  const auth: unknown = (client as unknown as { auth?: unknown }).auth
-  const signInFn = auth && typeof (auth as { signInAnonymously?: unknown }).signInAnonymously === 'function'
-    ? (auth as { signInAnonymously: () => Promise<{ error: unknown }> }).signInAnonymously
-    : null
-  if (!signInFn) {
+  const auth = (client as unknown as {
+    auth?: { signInAnonymously?: () => Promise<{ error: unknown }> }
+  }).auth
+  if (!auth || typeof auth.signInAnonymously !== 'function') {
     const error = new Error('Anonymous sign-in is not enabled for this Supabase project.')
     ;(error as Error & { code?: string }).code = 'ANON_UNAVAILABLE'
     throw error
   }
-  const { error } = await signInFn()
+  const { error } = await auth.signInAnonymously()
   if (error) throw error as Error
 }
 
@@ -125,6 +152,10 @@ export function isAnonymousSignInSupported(): boolean {
   const auth: unknown = (client as unknown as { auth?: unknown }).auth
   const signInFn = auth && typeof (auth as { signInAnonymously?: unknown }).signInAnonymously === 'function'
   return Boolean(signInFn)
+}
+
+export function __resetSupabaseClientForTests(): void {
+  cachedClient = null
 }
 
 declare global {

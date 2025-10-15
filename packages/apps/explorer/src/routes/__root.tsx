@@ -5,14 +5,12 @@ import { useStatus } from '@powersync/react'
 import { signOut } from '@ps/supabase'
 import { extractDeviceChallenge, isDaemonPreferred, notifyDaemonLogout } from '@ps/daemon-client'
 import { useSupabaseAuth } from '@ps/auth-context'
-import { useVault } from '@ps/vault-context'
 import { useDaemonAuthSnapshot } from '@ps/powersync'
 
 export const Route = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const { status: authStatus, session } = useSupabaseAuth()
-  const { status: vaultStatus, unlocked: vaultUnlocked, lockVault } = useVault()
   const daemonAuth = useDaemonAuthSnapshot()
   const status = useStatus()
   const [signingOut, setSigningOut] = React.useState(false)
@@ -20,10 +18,6 @@ export const Route = () => {
   const isAuthRoute = React.useMemo(() => {
     const path = location.pathname ?? ''
     return path.startsWith('/auth') || path.startsWith('/reset-password')
-  }, [location.pathname])
-  const isVaultRoute = React.useMemo(() => {
-    const path = location.pathname ?? ''
-    return path.startsWith('/vault')
   }, [location.pathname])
   const pathname = location.pathname ?? ''
   const daemonNeedsAttention = daemonAuth.enabled && daemonAuth.status && daemonAuth.status.status !== 'ready'
@@ -67,25 +61,7 @@ export const Route = () => {
     }
   }, [authStatus, isAuthRoute, pathname, navigate])
 
-  React.useEffect(() => {
-    if (authStatus !== 'authenticated') return
-    if (vaultStatus === 'loading') return
-
-    if ((vaultStatus === 'needsSetup' || vaultStatus === 'locked') && pathname !== '/vault') {
-      void navigate({ to: '/vault', replace: true })
-      return
-    }
-
-    if (vaultStatus === 'unlocked' && pathname.startsWith('/vault')) {
-      void navigate({ to: '/', replace: true })
-    }
-  }, [authStatus, vaultStatus, pathname, navigate])
-
   if (isAuthRoute) {
-    return <Outlet />
-  }
-
-  if (isVaultRoute) {
     return <Outlet />
   }
 
@@ -125,18 +101,9 @@ export const Route = () => {
     )
   }
 
-  if (!vaultUnlocked) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-500">
-        <span className="text-sm font-medium">Waiting for vault unlock…</span>
-      </div>
-    )
-  }
-
   const handleSignOut = async () => {
     setSigningOut(true)
     try {
-      await lockVault()
       if (preferDaemon) {
         const ok = await notifyDaemonLogout().catch((error) => {
           console.warn('[Explorer] failed to notify daemon logout', error)
@@ -168,14 +135,15 @@ export const Route = () => {
         <div>
           <h1 className="text-2xl font-bold">Repo Explorer</h1>
           <div className="text-sm text-gray-500">
-            {status.connected ? 'Connected' : 'Offline'}{!status.hasSynced ? ' · syncing…' : ''}
+            {status.connected ? 'Connected' : 'Offline'}
+            {!status.hasSynced ? ' · syncing…' : ''}
           </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <nav className="space-x-4">
-              <Link to="/" className="[&.active]:font-semibold">Home</Link>
-              <Link to="/org/$orgId" params={{orgId:'acme'}} className="[&.active]:font-semibold">Org: acme</Link>
-            <Link to="/org/$orgId/repo/$repoId" params={{orgId:'acme', repoId:'infra'}} className="[&.active]:font-semibold">Repo: acme/infra</Link>
+        </div>
+        <div className="flex items-center gap-4">
+          <nav className="space-x-4">
+            <Link to="/" className="[&.active]:font-semibold">
+              Home
+            </Link>
           </nav>
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500">{userLabel}</span>

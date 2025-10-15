@@ -108,7 +108,7 @@ describe('daemon-client', () => {
         reason: 'complete login',
         context: {
           challengeId: 'abc123',
-          verificationUrl: 'http://localhost:5173/auth?device_code=abc123',
+          verificationUrl: 'http://localhost:5783/auth?device_code=abc123',
         },
       }),
     }) as unknown as typeof fetch
@@ -122,7 +122,7 @@ describe('daemon-client', () => {
     expect(status?.status).toBe('pending')
     expect(mod.extractDeviceChallenge(status)).toEqual({
       challengeId: 'abc123',
-      verificationUrl: 'http://localhost:5173/auth?device_code=abc123',
+      verificationUrl: 'http://localhost:5783/auth?device_code=abc123',
       expiresAt: null,
       mode: null,
     })

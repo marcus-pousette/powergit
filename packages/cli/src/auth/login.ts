@@ -50,6 +50,7 @@ export interface DaemonDeviceLoginOptions {
   mode?: 'device-code' | 'browser'
   pollIntervalMs?: number
   timeoutMs?: number
+  onStatus?: (status: DaemonAuthStatus | null, attempts: number) => void
 }
 
 export interface DaemonDeviceLoginResult {
@@ -180,6 +181,7 @@ export async function loginWithDaemonDevice(options: DaemonDeviceLoginOptions = 
     endpoint: options.endpoint,
     metadata: options.metadata ?? null,
   })
+  options.onStatus?.(initialStatus, 0)
   let challenge = extractDeviceChallenge(initialStatus)
   if (initialStatus?.status === 'ready') {
     return { baseUrl, initialStatus, finalStatus: initialStatus, attempts: 0, timedOut: false, challenge }
@@ -196,6 +198,7 @@ export async function loginWithDaemonDevice(options: DaemonDeviceLoginOptions = 
     await delay(pollInterval)
     attempts += 1
     finalStatus = await fetchDaemonAuthStatus(baseUrl)
+    options.onStatus?.(finalStatus, attempts)
     if (!finalStatus) {
       continue
     }

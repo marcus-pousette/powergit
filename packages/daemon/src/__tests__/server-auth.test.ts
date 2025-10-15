@@ -71,4 +71,42 @@ describe('createDaemonServer auth routes', () => {
       await close();
     }
   });
+
+  it('adds CORS headers and responds to preflight requests', async () => {
+    const { baseUrl, close } = await listenServer({
+      host: '127.0.0.1',
+      port: 0,
+      cors: { origins: ['http://localhost:5783', 'http://127.0.0.1:5783'], allowHeaders: ['Content-Type'] },
+      getStatus: () => ({
+        startedAt: new Date().toISOString(),
+        connected: true,
+        streamCount: 0,
+      }),
+      getAuthStatus: () => ({ status: 'ready' }),
+    });
+
+    try {
+      const preflight = await fetch(`${baseUrl}/auth/status`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'http://localhost:5783',
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'Content-Type',
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe('http://localhost:5783');
+      expect(preflight.headers.get('access-control-allow-methods')).toContain('GET');
+      expect(preflight.headers.get('access-control-allow-headers')).toContain('Content-Type');
+
+      const statusRes = await fetch(`${baseUrl}/auth/status`, {
+        headers: { Origin: 'http://localhost:5783' },
+      });
+      expect(statusRes.status).toBe(200);
+      expect(await statusRes.json()).toEqual({ status: 'ready' });
+      expect(statusRes.headers.get('access-control-allow-origin')).toBe('http://localhost:5783');
+    } finally {
+      await close();
+    }
+  });
 });

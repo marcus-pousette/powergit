@@ -42,6 +42,8 @@ Create a development experience where every component—CLI, explorer, backgroun
 - Added `psgit daemon stop` to issue `/shutdown` requests and poll until the daemon exits; the helper no longer leaves orphaned `pnpm --filter @svc/daemon start` processes.
 - Guest login falls back to Supabase password auth when no token is provided, letting `pnpm --filter @pkg/cli cli login --guest` mint a JWT against the local stack without manual env tweaks.
 - `pnpm dev:stack:down` now calls the new CLI command to terminate the daemon before tearing down Supabase/PowerSync services.
+- Dev stack exports now include `POWERSYNC_DAEMON_DEVICE_URL` (defaulting to `http://localhost:5783/auth`), so `psgit login` prints a clickable link when the explorer is running.
+- Explorer `pnpm dev` now loads `.env.powersync-stack` automatically and binds to port 5783; use `pnpm --filter @app/explorer dev:remote` for hosted Supabase targets.
 
 ## Agent Notes (2025-10-18)
 - Removed the remaining Supabase edge function clients (`invokeSupabaseEdgeFunction`, browser connector hooks, CLI login flow) and replaced them with env/daemon-based credential handling. CRUD uploads now hard-fail if a caller still expects the old functions so we surface unsupported write paths immediately.
@@ -51,18 +53,23 @@ Create a development experience where every component—CLI, explorer, backgroun
 
 ## Agent Notes (2025-10-19)
 - Explorer router is now wrapped with `SupabaseAuthProvider`; PowerSync only connects once a Supabase session is present and disconnects on logout. Connector fetches Supabase access tokens dynamically in place of static env secrets.
-- Added Supabase client helper/context plus new `/auth`, `/vault`, and `/reset-password` routes with dedicated screens. Root layout redirects unauthenticated visitors to `/auth`, exposes a sign-out control, and keeps fixtures bridge initialisation intact.
-- Introduced a local vault flow: authenticated users must create/unlock a passphrase-backed vault (`/vault`) before PowerSync connects. Vault metadata lives in `localStorage` (hashed via SHA-256 when available) and we expose lock/clear helpers for future daemon integration.
+- Added Supabase client helper/context plus new `/auth` and `/reset-password` routes with dedicated screens. Root layout redirects unauthenticated visitors to `/auth`, exposes a sign-out control, and keeps fixtures bridge initialisation intact.
 - Supabase helper now supports runtime-injected mock clients (used in unit tests) so we can run UI tests without real credentials.
 - Explorer PowerSync connector now prefers a daemon-issued token when `VITE_POWERSYNC_USE_DAEMON=true`, falling back to Supabase sessions otherwise—ready for the upcoming daemon auth RPCs.
-- Added unit coverage for the vault context plus React Testing Library suites for `AuthScreen`/`VaultScreen` flows to exercise create/unlock and guest pathways.
-- Follow-ups: swap PowerSync token fetching to the daemon RPC once available (still using Supabase access tokens directly) and build end-to-end coverage for the new auth/vault flow.
+- Guest sign-in regression fixed: the Supabase helper now calls `client.auth.signInAnonymously()` directly so the internal `this.fetch` binding stays intact (prevents the anonymous login crash seen on the auth screen).
+- Enabled Supabase anonymous auth in the local stack (`supabase/config.toml`) so guest sessions work without manual dashboard changes; restart the stack to apply.
+- Explorer and stack scripts now export the daemon URL by default (`packages/apps/explorer/vite.config.ts`, `scripts/dev-local-stack.mjs`), so the browser points at the same `http://127.0.0.1:5030` daemon instance as the CLI device flow.
+- Follow-ups: swap PowerSync token fetching to the daemon RPC once available (still using Supabase access tokens directly) and build end-to-end coverage for the direct auth flow.
 
 ## Agent Notes (2025-10-20)
-- Hardened router redirects to avoid the infinite `navigate` loop that surfaced once Playwright started exercising the auth/vault flow. We now short-circuit duplicate redirects and centralise the vault gating in `__root` (`packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
-- Made the vault requirement runtime-tunable so tests can disable it by default. A `window.__powersyncRequireVault` override lets specific suites (auth-flow) re-enable the gate without recompiling (`packages/apps/explorer/src/ps/vault-context.tsx`).
-- Playwright config defaults the explorer to run without a vault while the auth flow test opts in at runtime. Smoke tests seed fixtures under an authenticated Supabase mock with the vault disabled; the auth flow still covers the create/unlock round trip (`packages/apps/explorer/playwright.config.ts`, `packages/apps/explorer/tests/e2e/*.spec.ts`).
-- Explorer e2e suite is back to green—`pnpm --filter @app/explorer test:e2e` runs both the smoke queries and auth flow without manual vault intervention.
+- Daemon RPC server now returns CORS headers (including OPTIONS preflight) so the explorer can poll `/auth/status` and complete device logins from `http://localhost:5783` without browser errors (`packages/daemon/src/server.ts`, `packages/daemon/src/__tests__/server-auth.test.ts`).
+- Explorer keeps `/auth` visible when `device_code` is present and shows a “daemon login in progress” helper for already authenticated sessions, avoiding redundant redirects during CLI device flows (`packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
+
+## Agent Notes (2025-10-21)
+- Removed the passphrase gate from the explorer; sign-in now lands directly on the overview without additional setup screens (`packages/apps/explorer/src/main.tsx`, `packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
+- Home route now surfaces real PowerSync data by aggregating refs into an org list, and navigation was simplified to favour the home dashboard (`packages/apps/explorer/src/routes/index.tsx`, `packages/apps/explorer/src/routes/org.$orgId.index.tsx`).
+- Explorer Playwright suites were updated to cover the streamlined login/logout flow with no vault dependencies (`packages/apps/explorer/tests/e2e/*.spec.ts`).
+- `psgit demo-seed` now clones the `powersync-community/react-supabase-chat-e2ee` example by default (override with `--template-url` or `--no-template`), and `DEV_SETUP.md` documents the quick-start command sequence for seeding demo data.
 
 ## Next Steps / TODO (Auth & Explorer)
 
@@ -81,10 +88,10 @@ Create a development experience where every component—CLI, explorer, backgroun
 
 3. **Explorer Authentication**
    - File targets: `packages/apps/explorer/src/screens/auth/*`, `packages/apps/explorer/src/routes/*`, `packages/apps/explorer/src/ps/*`.
-   - ✅ Supabase helper/context, `/auth`, `/vault`, and `/reset-password` routes/screens implemented; vault gating in place; unit coverage added for auth + vault screens.
+   - ✅ Supabase helper/context, `/auth`, and `/reset-password` routes/screens implemented; unit coverage added for the authentication flows and sign-out handling.
    - ⏳ Next auth tasks:
      - Wire explorer PowerSync connector to daemon-issued tokens once `/auth/status` etc. are available (replace direct Supabase access tokens).
-     - Add Playwright coverage for the full `/auth → /vault → explorer → sign out → re-auth → unlock` flow using the injected Supabase mock (current attempt blocked on Vite mount timing).
+     - Add Playwright coverage for the full `/auth → explorer → sign out → re-auth` flow using the injected Supabase mock (current attempt blocked on Vite mount timing).
      - Extend tests to cover guest/device login flows once the daemon endpoints exist.
 
 4. **CLI ↔ Explorer Onboarding**

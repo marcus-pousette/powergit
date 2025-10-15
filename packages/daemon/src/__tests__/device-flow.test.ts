@@ -22,7 +22,7 @@ describe('DeviceAuthCoordinator', () => {
     const authManager = await DaemonAuthManager.create({ sessionPath, defaultEndpoint: 'https://endpoint.dev' });
     const coordinator = new DeviceAuthCoordinator({
       authManager,
-      verificationUrl: 'http://localhost:5173/auth',
+      verificationUrl: 'http://localhost:5783/auth',
       autoLaunch: false,
     });
 

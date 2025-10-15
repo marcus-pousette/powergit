@@ -14,6 +14,14 @@ export interface DaemonStatusSnapshot {
   streamCount: number;
 }
 
+export interface DaemonCorsOptions {
+  origins?: string | string[];
+  allowMethods?: string[];
+  allowHeaders?: string[];
+  allowCredentials?: boolean;
+  maxAgeSeconds?: number;
+}
+
 export interface DaemonServerOptions {
   host: string;
   port: number;
@@ -28,6 +36,7 @@ export interface DaemonServerOptions {
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
   pushPack?: (params: { orgId: string; repoId: string; payload: DaemonPushRequest }) => Promise<DaemonPushResponse>;
   getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
+  cors?: DaemonCorsOptions;
 }
 
 export interface DaemonServer {
@@ -85,6 +94,26 @@ function toAuthStatusPayload(payload: DaemonAuthResponse): AuthStatusPayload {
   return rest;
 }
 
+function normalizeCorsOrigins(origins?: string | string[] | null): '*' | string[] {
+  if (!origins || (Array.isArray(origins) && origins.length === 0)) {
+    return '*';
+  }
+  if (typeof origins === 'string') {
+    const trimmed = origins.trim();
+    if (!trimmed) return '*';
+    if (trimmed === '*') return '*';
+    return [trimmed];
+  }
+  const normalized = origins
+    .map((origin) => origin?.trim())
+    .filter((origin): origin is string => Boolean(origin && origin !== '*'));
+  return normalized.length === 0 ? '*' : Array.from(new Set(normalized));
+}
+
+function formatHeaderList(values: string[]): string {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).join(', ');
+}
+
 export interface DaemonPackResponse {
   packBase64: string;
   encoding?: string;
@@ -105,14 +134,83 @@ export interface DaemonPushRequest {
 export type DaemonPushResponse = PersistPushResult & { message?: string };
 
 export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
+  const corsOrigins = normalizeCorsOrigins(options.cors?.origins ?? null);
+  const allowMethodsHeader = formatHeaderList(
+    (options.cors?.allowMethods && options.cors.allowMethods.length > 0 ? options.cors.allowMethods : ['GET', 'POST', 'OPTIONS']).map(
+      (method) => method.toUpperCase(),
+    ),
+  );
+  const defaultAllowHeaders = formatHeaderList(
+    options.cors?.allowHeaders && options.cors.allowHeaders.length > 0
+      ? options.cors.allowHeaders
+      : ['Content-Type', 'Authorization', 'Accept'],
+  );
+  const allowCredentials = options.cors?.allowCredentials === true;
+  const maxAgeSeconds =
+    typeof options.cors?.maxAgeSeconds === 'number' && Number.isFinite(options.cors.maxAgeSeconds) && options.cors.maxAgeSeconds >= 0
+      ? Math.floor(options.cors.maxAgeSeconds)
+      : 600;
+
+  const resolveOrigin = (requestOrigin: string | undefined): string | null => {
+    if (!requestOrigin) {
+      return corsOrigins === '*' ? '*' : null;
+    }
+    if (corsOrigins === '*') {
+      return '*';
+    }
+    return corsOrigins.includes(requestOrigin) ? requestOrigin : null;
+  };
+
+  const setCorsHeaders = (req: http.IncomingMessage, res: http.ServerResponse, preflight: boolean): void => {
+    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    const originHeader = resolveOrigin(requestOrigin);
+    if (originHeader) {
+      res.setHeader('Access-Control-Allow-Origin', originHeader);
+      if (originHeader !== '*') {
+        const vary = res.getHeader('Vary');
+        res.setHeader('Vary', vary ? `${vary}, Origin` : 'Origin');
+      }
+      if (allowCredentials && originHeader !== '*') {
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
+    }
+    if (allowMethodsHeader) {
+      res.setHeader('Access-Control-Allow-Methods', allowMethodsHeader);
+    }
+    if (preflight) {
+      const requestHeaders =
+        typeof req.headers['access-control-request-headers'] === 'string' ? req.headers['access-control-request-headers'] : null;
+      if (requestHeaders) {
+        res.setHeader('Access-Control-Allow-Headers', requestHeaders);
+      } else if (defaultAllowHeaders) {
+        res.setHeader('Access-Control-Allow-Headers', defaultAllowHeaders);
+      }
+      if (maxAgeSeconds > 0) {
+        res.setHeader('Access-Control-Max-Age', String(maxAgeSeconds));
+      }
+    } else if (defaultAllowHeaders) {
+      res.setHeader('Access-Control-Allow-Headers', defaultAllowHeaders);
+    }
+  };
+
   const server = http.createServer((req, res) => {
     if (!req.url) {
+      setCorsHeaders(req, res, false);
       res.statusCode = 400;
       res.end();
       return;
     }
 
+    if (req.method === 'OPTIONS') {
+      setCorsHeaders(req, res, true);
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
     const url = new URL(req.url, `http://${req.headers.host ?? options.host}`);
+
+    setCorsHeaders(req, res, false);
 
     if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/status')) {
       sendJson(res, 200, options.getStatus());

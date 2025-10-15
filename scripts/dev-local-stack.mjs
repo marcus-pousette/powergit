@@ -23,6 +23,7 @@ const DEFAULT_LOCAL_DB_URL = 'postgresql://postgres:postgres@127.0.0.1:55432/pos
 const DEFAULT_SUPABASE_URL = `http://127.0.0.1:${SUPABASE_PORT}`
 const DEFAULT_SUPABASE_EMAIL = process.env.POWERSYNC_STACK_SUPABASE_USER_EMAIL ?? 'psgit-service@example.com'
 const DEFAULT_SUPABASE_PASSWORD = process.env.POWERSYNC_STACK_SUPABASE_USER_PASSWORD ?? 'psgit-service-password'
+const DEFAULT_DAEMON_DEVICE_URL = process.env.POWERSYNC_DAEMON_DEVICE_URL ?? 'http://localhost:5783/auth'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -499,6 +500,15 @@ function buildStackEnv(statusEnv) {
     process.env.POWERSYNC_ENDPOINT ?? statusEnv.POWERSYNC_ENDPOINT ?? `http://127.0.0.1:${powersyncPort}`
   const remoteUrl = `powersync::${powersyncEndpoint.replace(/\/$/, '')}/orgs/${DEFAULT_ORG}/repos/${DEFAULT_REPO}`
   const databaseUrl = resolvedDatabaseUrl
+  const daemonDeviceUrl =
+    process.env.POWERSYNC_DAEMON_DEVICE_URL ??
+    statusEnv.POWERSYNC_DAEMON_DEVICE_URL ??
+    DEFAULT_DAEMON_DEVICE_URL
+  const daemonUrl =
+    process.env.POWERSYNC_DAEMON_URL ??
+    statusEnv.POWERSYNC_DAEMON_URL ??
+    process.env.POWERSYNC_DAEMON_ENDPOINT ??
+    'http://127.0.0.1:5030'
 
   return {
     supabaseUrl,
@@ -518,6 +528,8 @@ function buildStackEnv(statusEnv) {
     psDatabaseUrl,
     psStorageUri,
     psPort,
+    daemonDeviceUrl,
+    daemonUrl,
   }
 }
 
@@ -582,6 +594,8 @@ function buildExportLines(env, authUser) {
     `export POWERSYNC_DATABASE_URL=${JSON.stringify(env.powersyncDatabaseUrl)}`,
     `export POWERSYNC_STORAGE_URI=${JSON.stringify(env.powersyncStorageUri)}`,
     `export POWERSYNC_PORT=${JSON.stringify(env.powersyncPort)}`,
+    `export POWERSYNC_DAEMON_URL=${JSON.stringify(env.daemonUrl)}`,
+    `export POWERSYNC_DAEMON_DEVICE_URL=${JSON.stringify(env.daemonDeviceUrl)}`,
     `export PS_DATABASE_URL=${JSON.stringify(env.psDatabaseUrl)}`,
     `export PS_STORAGE_URI=${JSON.stringify(env.psStorageUri)}`,
     `export PS_PORT=${JSON.stringify(env.psPort)}`,
@@ -679,11 +693,13 @@ async function startStack() {
     POWERSYNC_DATABASE_URL: env.powersyncDatabaseUrl,
     POWERSYNC_STORAGE_URI: env.powersyncStorageUri,
     POWERSYNC_PORT: env.powersyncPort,
+    POWERSYNC_DAEMON_URL: env.daemonUrl,
     PS_DATABASE_URL: env.psDatabaseUrl,
     PS_STORAGE_URI: env.psStorageUri,
     PS_PORT: env.psPort,
     POWERSYNC_SUPABASE_JWT_SECRET: env.jwtSecret,
     POWERSYNC_SUPABASE_JWT_SECRET_B64: env.jwtSecretBase64,
+    POWERSYNC_DAEMON_DEVICE_URL: env.daemonDeviceUrl,
     SUPABASE_BIN,
     DOCKER_BIN,
   })

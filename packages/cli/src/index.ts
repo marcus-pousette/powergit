@@ -1,7 +1,7 @@
 
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir, cp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve, dirname } from 'node:path'
+import { join, resolve, dirname, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { PowerSyncRemoteClient, RAW_TABLE_SPECS, type RepoDataSummary, parsePowerSyncUrl } from '@shared/core'
@@ -10,6 +10,7 @@ const STREAM_SUFFIXES = ['refs', 'commits', 'file_changes', 'objects'] as const
 type StreamSuffix = typeof STREAM_SUFFIXES[number]
 const DEFAULT_SEED_BRANCH = 'main'
 const DEFAULT_SEED_AUTHOR = { name: 'PowerSync Seed Bot', email: 'seed@powersync.test' }
+const DEFAULT_TEMPLATE_REPO = 'https://github.com/powersync-community/react-supabase-chat-e2ee.git'
 
 export const DEFAULT_DAEMON_URL =
   process.env.POWERSYNC_DAEMON_URL ??
@@ -29,12 +30,14 @@ export interface SeedDemoOptions {
   skipSync?: boolean
   keepWorkingDir?: boolean
   workingDir?: string
+  templateRepoUrl?: string | null
 }
 
 export interface SeedDemoResult {
   remoteUrl: string
   branch: string
   workingDirectory: string
+  templateRepoUrl?: string | null
   syncedDatabase?: string
 }
 
@@ -62,26 +65,53 @@ export async function seedDemoRepository(options: SeedDemoOptions = {}): Promise
 
   await mkdir(repoDir, { recursive: true })
 
+  let usedTemplateRepo: string | null = null
+  const templateRepoUrl =
+    options.templateRepoUrl === null
+      ? null
+      : options.templateRepoUrl ?? process.env.POWERSYNC_SEED_TEMPLATE_URL ?? DEFAULT_TEMPLATE_REPO
+
   const git = simpleGit({ baseDir: repoDir })
   await git.init()
   await git.addConfig('user.email', DEFAULT_SEED_AUTHOR.email)
   await git.addConfig('user.name', DEFAULT_SEED_AUTHOR.name)
 
-  await writeFile(join(repoDir, 'README.md'), '# PowerSync Seed Repo\n\nThis data was seeded via psgit.\n')
-  await git.add(['README.md'])
-  await git.commit('Initial commit')
+  if (templateRepoUrl) {
+    const tempBase = await mkdtemp(join(tmpdir(), 'psgit-template-'))
+    const templateDir = join(tempBase, 'template')
+    try {
+      await simpleGit().clone(templateRepoUrl, templateDir, ['--depth', '1'])
+    } catch (error) {
+      await rm(tempBase, { recursive: true, force: true })
+      throw new Error(`Failed to clone demo template from ${templateRepoUrl}: ${(error as Error)?.message ?? error}`)
+    }
+    await rm(join(templateDir, '.git'), { recursive: true, force: true }).catch(() => {})
+    await cp(templateDir, repoDir, {
+      recursive: true,
+      force: true,
+      filter: (src) => !src.endsWith(`${sep}.git`),
+    })
+    await rm(tempBase, { recursive: true, force: true })
+    await git.add('.')
+    await git.commit(`Import demo template content from ${templateRepoUrl}`)
+    usedTemplateRepo = templateRepoUrl
+  } else {
+    await writeFile(join(repoDir, 'README.md'), '# PowerSync Seed Repo\n\nThis data was seeded via psgit.\n')
+    await git.add(['README.md'])
+    await git.commit('Initial commit')
 
-  await mkdir(join(repoDir, 'src'), { recursive: true })
-  await writeFile(
-    join(repoDir, 'src', 'app.ts'),
-    "export const greet = (name: string) => `Hello, ${name}!`\n",
-  )
-  await writeFile(
-    join(repoDir, 'src', 'routes.md'),
-    '- /branches\n- /commits\n- /files\n',
-  )
-  await git.add(['src/app.ts', 'src/routes.md'])
-  await git.commit('Add sample application files')
+    await mkdir(join(repoDir, 'src'), { recursive: true })
+    await writeFile(
+      join(repoDir, 'src', 'app.ts'),
+      "export const greet = (name: string) => `Hello, ${name}!`\n",
+    )
+    await writeFile(
+      join(repoDir, 'src', 'routes.md'),
+      '- /branches\n- /commits\n- /files\n',
+    )
+    await git.add(['src/app.ts', 'src/routes.md'])
+    await git.commit('Add sample application files')
+  }
 
   const remotes = await git.getRemotes(true)
   const existingRemote = remotes.find((entry) => entry.name === remoteName)
@@ -115,6 +145,7 @@ export async function seedDemoRepository(options: SeedDemoOptions = {}): Promise
     remoteUrl,
     branch,
     workingDirectory: repoDir,
+    templateRepoUrl: usedTemplateRepo,
     syncedDatabase,
   }
 }

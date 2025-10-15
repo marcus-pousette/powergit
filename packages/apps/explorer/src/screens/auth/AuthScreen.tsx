@@ -45,6 +45,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     try {
       await callback(email, password)
     } catch (err) {
+      console.error(`[AuthScreen] ${mode === 'signin' ? 'sign-in' : 'sign-up'} failed`, err)
       const message = err instanceof Error ? err.message : 'Authentication failed.'
       setError(message)
     } finally {
@@ -60,6 +61,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     try {
       await onGuestSignIn()
     } catch (err) {
+      console.error('[AuthScreen] guest sign-in failed', err)
       const message = err instanceof Error ? err.message : 'Guest sign-in failed.'
       setError(message)
     } finally {
@@ -78,6 +80,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       await onResetPassword(email)
       setInfoMessage('If that email exists, a reset link is on its way.')
     } catch (err) {
+      console.error('[AuthScreen] password reset failed', err)
       const message = err instanceof Error ? err.message : 'Failed to send reset email.'
       setError(message)
     } finally {
@@ -200,4 +203,3 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     </div>
   )
 }
-

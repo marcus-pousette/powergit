@@ -4,8 +4,80 @@ import wasm from 'vite-plugin-wasm'
 import topLevelAwait from 'vite-plugin-top-level-await'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync } from 'node:fs'
 
 const resolveFromRoot = (p: string) => path.resolve(fileURLToPath(new URL('.', import.meta.url)), p)
+
+const stackEnvPath = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..', '.env.powersync-stack')
+
+const STACK_ENV_FALLBACKS: Record<string, string[]> = {
+  VITE_SUPABASE_URL: ['POWERSYNC_SUPABASE_URL', 'PSGIT_TEST_SUPABASE_URL'],
+  VITE_SUPABASE_ANON_KEY: ['POWERSYNC_SUPABASE_ANON_KEY', 'PSGIT_TEST_SUPABASE_ANON_KEY'],
+  VITE_SUPABASE_SCHEMA: ['POWERSYNC_SUPABASE_SCHEMA'],
+  VITE_POWERSYNC_ENDPOINT: ['POWERSYNC_ENDPOINT', 'PSGIT_TEST_ENDPOINT'],
+  VITE_POWERSYNC_DAEMON_URL: ['POWERSYNC_DAEMON_URL', 'PSGIT_TEST_DAEMON_URL'],
+  VITE_POWERSYNC_USE_DAEMON: ['POWERSYNC_USE_DAEMON'],
+  POWERSYNC_DAEMON_DEVICE_URL: ['POWERSYNC_DAEMON_DEVICE_URL'],
+}
+
+function loadStackEnv(path: string): Record<string, string> {
+  if (!existsSync(path)) {
+    return {}
+  }
+  const output: Record<string, string> = {}
+  const raw = readFileSync(path, 'utf8')
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#') || !trimmed.startsWith('export ')) continue
+    const assignment = trimmed.slice('export '.length)
+    const eqIndex = assignment.indexOf('=')
+    if (eqIndex === -1) continue
+    const key = assignment.slice(0, eqIndex).trim()
+    let value = assignment.slice(eqIndex + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    output[key] = value
+  }
+  return output
+}
+
+const stackEnv = loadStackEnv(stackEnvPath)
+
+function applyStackEnvFallbacks() {
+  const defaults: Record<string, string> = {
+    VITE_SUPABASE_URL: 'http://127.0.0.1:55431',
+    VITE_SUPABASE_ANON_KEY:
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0',
+    VITE_POWERSYNC_ENDPOINT: 'http://127.0.0.1:55440',
+    VITE_POWERSYNC_DAEMON_URL: 'http://127.0.0.1:5030',
+    VITE_POWERSYNC_USE_DAEMON: 'true',
+    POWERSYNC_DAEMON_DEVICE_URL: 'http://localhost:5783/auth',
+  }
+
+  for (const [target, fallbacks] of Object.entries(STACK_ENV_FALLBACKS)) {
+    const current = process.env[target]
+    if (current && current.trim().length > 0) {
+      continue
+    }
+    const candidates = [process.env[target], stackEnv[target], ...fallbacks.map((key) => process.env[key] ?? stackEnv[key])]
+    const resolved = candidates.find((value) => typeof value === 'string' && value.trim().length > 0)
+    if (resolved) {
+      process.env[target] = resolved.trim()
+    } else if (defaults[target]) {
+      process.env[target] = defaults[target]
+    }
+  }
+
+  if (!process.env.VITE_PORT) {
+    process.env.VITE_PORT = '5783'
+  }
+}
+
+applyStackEnvFallbacks()
 
 const repoBase = (() => {
   if (process.env.GITHUB_PAGES?.toLowerCase() === 'true') {
@@ -21,10 +93,17 @@ const repoBase = (() => {
   return '/'
 })()
 
+const devServerPort = (() => {
+  const candidate = process.env.VITE_PORT ?? process.env.PORT ?? '5783'
+  const parsed = Number.parseInt(candidate, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5783
+})()
+
 export default defineConfig({
   base: repoBase,
   plugins: [wasm(), topLevelAwait(), react()],
   define: { 'process.env': {} },
+  envPrefix: ['VITE_', 'POWERSYNC_', 'PSGIT_'],
   resolve: {
     alias: {
       '@ps': resolveFromRoot('src/ps'),
@@ -42,6 +121,9 @@ export default defineConfig({
     plugins: () => [wasm(), topLevelAwait()],
   },
   server: {
+    port: devServerPort,
+    strictPort: true,
+    host: '127.0.0.1',
     fs: {
       allow: [resolveFromRoot('../../..')],
     },
