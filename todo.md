@@ -3,6 +3,13 @@
 ## Vision
 Create a development experience where every component—CLI, explorer, background jobs—operates purely through PowerSync replicas. Supabase and object storage are written through the daemon’s integrated bridge layer (running locally for dev and configurable for shared environments), so no developer tooling ever needs direct credentials.
 
+## Current Status (2025-10-18)
+- Local daemon manages the PowerSync SQLite replica, handles pushes/fetches, and writes Supabase mutations through its internal writer.
+- Remote helper already delegates all Git operations to the daemon via `PowerSyncRemoteClient`.
+- CLI now calls the daemon’s `/summary` endpoint for `psgit sync` instead of creating its own SQLite snapshot; documentation/tests updated accordingly.
+- Explorer still authenticates directly against Supabase (`@supabase/supabase-js`) and uses `@powersync/web` to read data; no daemon integration yet.
+- Auth today is manual: CLI caches Supabase JWTs in `~/.psgit/session.json`; explorer embeds Supabase anon key; remote helper relies on daemon env vars.
+
 ---
 
 ## Agent Notes (2025-10-08)
@@ -36,6 +43,59 @@ Create a development experience where every component—CLI, explorer, backgroun
 - CLI `login` no longer accepts `--functions-url` or `--service-role-key`; use Supabase password login or manual tokens. Tests were updated accordingly; the live sync e2e still times out at 60 s after the stack bootstrap (needs follow-up to stabilise the daemon push path).
 - CLI now delegates `psgit sync` to the daemon: we removed the local PowerSync database, call the daemon's new `/summary` endpoint, and print raw table counts instead of creating a SQLite snapshot. New RPCs (`/summary`) were added to the daemon and shared client; tests/docs updated accordingly.
 
+## Agent Notes (2025-10-19)
+- Explorer router is now wrapped with `SupabaseAuthProvider`; PowerSync only connects once a Supabase session is present and disconnects on logout. Connector fetches Supabase access tokens dynamically in place of static env secrets.
+- Added Supabase client helper/context plus new `/auth`, `/vault`, and `/reset-password` routes with dedicated screens. Root layout redirects unauthenticated visitors to `/auth`, exposes a sign-out control, and keeps fixtures bridge initialisation intact.
+- Introduced a local vault flow: authenticated users must create/unlock a passphrase-backed vault (`/vault`) before PowerSync connects. Vault metadata lives in `localStorage` (hashed via SHA-256 when available) and we expose lock/clear helpers for future daemon integration.
+- Supabase helper now supports runtime-injected mock clients (used in unit tests) so we can run UI tests without real credentials.
+- Explorer PowerSync connector now prefers a daemon-issued token when `VITE_POWERSYNC_USE_DAEMON=true`, falling back to Supabase sessions otherwise—ready for the upcoming daemon auth RPCs.
+- Added unit coverage for the vault context plus React Testing Library suites for `AuthScreen`/`VaultScreen` flows to exercise create/unlock and guest pathways.
+- Follow-ups: swap PowerSync token fetching to the daemon RPC once available (still using Supabase access tokens directly) and build end-to-end coverage for the new auth/vault flow.
+
+## Agent Notes (2025-10-20)
+- Hardened router redirects to avoid the infinite `navigate` loop that surfaced once Playwright started exercising the auth/vault flow. We now short-circuit duplicate redirects and centralise the vault gating in `__root` (`packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
+- Made the vault requirement runtime-tunable so tests can disable it by default. A `window.__powersyncRequireVault` override lets specific suites (auth-flow) re-enable the gate without recompiling (`packages/apps/explorer/src/ps/vault-context.tsx`).
+- Playwright config defaults the explorer to run without a vault while the auth flow test opts in at runtime. Smoke tests seed fixtures under an authenticated Supabase mock with the vault disabled; the auth flow still covers the create/unlock round trip (`packages/apps/explorer/playwright.config.ts`, `packages/apps/explorer/tests/e2e/*.spec.ts`).
+- Explorer e2e suite is back to green—`pnpm --filter @app/explorer test:e2e` runs both the smoke queries and auth flow without manual vault intervention.
+
+## Next Steps / TODO (Auth & Explorer)
+
+1. **Daemon Auth API**
+   - File targets: `packages/daemon/src/server.ts`, `packages/daemon/src/auth/*`, and `packages/daemon/src/index.ts`.
+   - ✅ `/auth/status`, `/auth/guest`, `/auth/device`, and `/auth/logout` endpoints proxy the daemon auth manager; credentials persist to `~/.psgit/session.json` and feed the PowerSync connector. `/auth/device` now issues challenge codes with structured context so other clients (Explorer/CLI) can finalize the flow.
+   - ✅ Device/browser flow scaffolding: daemon tracks pending challenges, optionally launches a verification URL, and accepts completion via `/auth/device` with `challengeId + token` (Explorer wiring in place). Supabase OAuth/device-code integration remains to be wired.
+   - ⏳ Expose proactive expiry/refresh logic so clients can prompt reauth before failure.
+
+2. **CLI Login Flow**
+   - File targets: `packages/cli/src/bin.ts`, `packages/cli/src/auth/login.ts`, `packages/cli/src/index.ts`.
+   - ✅ `psgit login --guest` now proxies to daemon `/auth/guest`; manual tokens reuse the same path.
+   - ✅ Default `psgit login` triggers `/auth/device`, surfaces device codes/verification URLs, and polls `/auth/status` until the daemon reports `ready/error/auth_required`.
+   - ✅ `psgit sync` no longer depends on cached tokens; it ensures the daemon is ready/authenticated before reading repo summaries.
+   - ⏳ Once the daemon can mint tokens autonomously, tighten CLI messaging around browser/device completion vs. retries.
+
+3. **Explorer Authentication**
+   - File targets: `packages/apps/explorer/src/screens/auth/*`, `packages/apps/explorer/src/routes/*`, `packages/apps/explorer/src/ps/*`.
+   - ✅ Supabase helper/context, `/auth`, `/vault`, and `/reset-password` routes/screens implemented; vault gating in place; unit coverage added for auth + vault screens.
+   - ⏳ Next auth tasks:
+     - Wire explorer PowerSync connector to daemon-issued tokens once `/auth/status` etc. are available (replace direct Supabase access tokens).
+     - Add Playwright coverage for the full `/auth → /vault → explorer → sign out → re-auth → unlock` flow using the injected Supabase mock (current attempt blocked on Vite mount timing).
+     - Extend tests to cover guest/device login flows once the daemon endpoints exist.
+
+4. **CLI ↔ Explorer Onboarding**
+   - File targets: `packages/cli/src/bin.ts` (login command), `packages/apps/explorer/src/main.tsx` (listen for daemon status).
+  - Implement `psgit login` fallback: if no credentials cached, launch explorer login UI (or instruct user to visit local login route). CLI polls `/auth/status` and exits once authenticated.
+
+5. **Testing / Coverage**
+   - CLI: add e2e flows for guest login, device/browser login, missing credentials, expired credentials, invalid daemon state (`packages/cli/src/cli.e2e.test.ts`).
+   - Explorer: add integration tests covering sign-in, sign-up, password reset, guest flow, and verifying PowerSync data appears post-auth (`packages/apps/explorer/tests/e2e/*`).
+   - ✅ Daemon: coverage added for auth manager persistence, HTTP auth routes, and device challenge lifecycle (`packages/daemon/src/__tests__/auth-manager.test.ts`, `server-auth.test.ts`, `device-flow.test.ts`). Extend with negative cases once token refresh logic lands.
+   - ✅ CLI unit tests updated for daemon auth helpers & sync path (`packages/cli/src/auth/login-daemon.test.ts`, `packages/cli/src/sync.test.ts`). Live-stack suite now skips gracefully when daemon credentials are absent.
+   - ✅ Explorer unit coverage now exercises device challenge parsing (`packages/apps/explorer/src/ps/daemon-client.test.ts`).
+
+6. **Docs / Dev Experience**
+   - Update `DEV_SETUP.md`, `docs/supabase.md`, and explorer README to describe new auth flows, required env vars (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_SUPABASE_RESET_REDIRECT_URL`, etc.).
+   - Document CLI commands (`psgit login --guest`, `psgit login`, `psgit logout`) and troubleshooting steps when daemon auth fails.
+
 ## Target Architecture Overview
 - **Local PowerSync Daemon**: Long-lived process running on each developer machine/CI agent. Maintains a hydrated PowerSync database, exposes a local RPC API (Unix socket / localhost HTTP) for Git operations, and queues mutations.
 - **Remote Helper (CLI)**: Thin wrapper over the daemon. Ensures the daemon is running, then calls RPC endpoints for `fetch`, `push`, `ls-remote`, etc. No network calls to Supabase.
@@ -60,10 +120,10 @@ Create a development experience where every component—CLI, explorer, backgroun
 - Shared schema now includes an `objects` table mirroring `git_packs` so packs replicate through PowerSync.
 - [x] Implement a Supabase writer inside the daemon that drains `getCrudTransactions()` and applies mutations directly (supporting both local Docker Supabase and hosted instances via configuration).
 - [ ] Handle packfile uploads from the daemon (local filesystem or remote storage via signed URLs).
-- [ ] Cache auth credentials (Supabase-issued token or service token) securely; refresh automatically.
+- [ ] Cache auth credentials (Supabase-issued token or service token) securely; refresh automatically. *(Local persistence now handled by daemon auth manager; automatic refresh still pending.)*
 - [ ] Provide CLI tooling for inspecting daemon logs, flushing queues, or resetting the replica.
 - [ ] Expose full Git RPC surface (`fetchRefs`, `pushRefs`, `fetchObjects`, `enqueuePack`) over localhost for the helper to consume.
-- [ ] Surface `auth_required` / `ready` status endpoints the helper can poll.
+- [x] Surface `auth_required` / `ready` status endpoints the helper can poll. *(Implemented via `/auth/status` in `@svc/daemon`.)*
 - [ ] Implement interactive Supabase/SSO login (browser or device code) when service credentials are missing; persist tokens locally.
 - [x] Ensure PowerSync service trusts Supabase JWTs (export HS secret + base64 for local dev) so daemon-issued/ Supabase tokens succeed.
 

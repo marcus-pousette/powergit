@@ -3,6 +3,9 @@ import type { AddressInfo } from 'node:net';
 import busboy from 'busboy';
 import type { GitPushSummary, RefRow, RepoSummaryRow } from '@shared/core';
 import type { PersistPushResult, PushUpdateRow } from './queries.js';
+import type { AuthStatusPayload } from './auth/index.js';
+
+export type DaemonAuthResponse = AuthStatusPayload & { httpStatus?: number };
 
 export interface DaemonStatusSnapshot {
   startedAt: string;
@@ -15,7 +18,11 @@ export interface DaemonServerOptions {
   host: string;
   port: number;
   getStatus: () => DaemonStatusSnapshot;
+  getAuthStatus?: () => AuthStatusPayload;
   onShutdownRequested?: () => Promise<void> | void;
+  handleAuthGuest?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
+  handleAuthDevice?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
+  handleAuthLogout?: () => Promise<DaemonAuthResponse>;
   fetchRefs?: (params: { orgId: string; repoId: string; limit?: number }) => Promise<RefRow[]>;
   listRepos?: (params: { orgId: string; limit?: number }) => Promise<RepoSummaryRow[]>;
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
@@ -55,6 +62,29 @@ async function readJsonBody<T = unknown>(req: http.IncomingMessage): Promise<T |
   }
 }
 
+function resolveAuthStatusCode(payload: DaemonAuthResponse, fallback = 200): number {
+  if (typeof payload.httpStatus === 'number' && Number.isFinite(payload.httpStatus) && payload.httpStatus > 0) {
+    return Math.floor(payload.httpStatus);
+  }
+  switch (payload.status) {
+    case 'ready':
+      return fallback;
+    case 'pending':
+      return 202;
+    case 'auth_required':
+      return 401;
+    case 'error':
+      return 400;
+    default:
+      return fallback;
+  }
+}
+
+function toAuthStatusPayload(payload: DaemonAuthResponse): AuthStatusPayload {
+  const { httpStatus, ...rest } = payload;
+  return rest;
+}
+
 export interface DaemonPackResponse {
   packBase64: string;
   encoding?: string;
@@ -86,6 +116,102 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
 
     if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/status')) {
       sendJson(res, 200, options.getStatus());
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/auth/status') {
+      if (!options.getAuthStatus) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      try {
+        const payload = options.getAuthStatus();
+        sendJson(res, 200, payload);
+      } catch (error) {
+        console.error('[powersync-daemon] failed to provide auth status', error);
+        res.statusCode = 500;
+        res.end();
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/auth/logout') {
+      if (!options.handleAuthLogout) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+
+      Promise.resolve()
+        .then(() => options.handleAuthLogout?.())
+        .then((payload) => {
+          if (!payload) {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          sendJson(res, resolveAuthStatusCode(payload, 200), toAuthStatusPayload(payload));
+        })
+        .catch((error) => {
+          console.error('[powersync-daemon] failed to process auth logout', error);
+          res.statusCode = 500;
+          res.end();
+        });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/auth/guest') {
+      if (!options.handleAuthGuest) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      Promise.resolve()
+        .then(async () => {
+          const body = await readJsonBody<Record<string, unknown>>(req);
+          return options.handleAuthGuest?.(body ?? {});
+        })
+        .then((payload) => {
+          if (!payload) {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          sendJson(res, resolveAuthStatusCode(payload, 200), toAuthStatusPayload(payload));
+        })
+        .catch((error) => {
+          console.error('[powersync-daemon] failed to process auth guest login', error);
+          res.statusCode = 500;
+          res.end();
+        });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/auth/device') {
+      if (!options.handleAuthDevice) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      Promise.resolve()
+        .then(async () => {
+          const body = await readJsonBody<Record<string, unknown>>(req);
+          return options.handleAuthDevice?.(body ?? {});
+        })
+        .then((payload) => {
+          if (!payload) {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          sendJson(res, resolveAuthStatusCode(payload, 202), toAuthStatusPayload(payload));
+        })
+        .catch((error) => {
+          console.error('[powersync-daemon] failed to process auth device login', error);
+          res.statusCode = 500;
+          res.end();
+        });
       return;
     }
 

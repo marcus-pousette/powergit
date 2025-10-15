@@ -25,8 +25,8 @@ const getEnvOrEmpty = (...keys: string[]) => {
   return ''
 }
 
-const SUPABASE_URL = getEnvOrEmpty('VITE_SUPABASE_URL', 'POWERSYNC_SUPABASE_URL')
-const SUPABASE_ANON_KEY = getEnvOrEmpty('VITE_SUPABASE_ANON_KEY', 'POWERSYNC_SUPABASE_ANON_KEY')
+const SUPABASE_URL = getEnvOrEmpty('VITE_SUPABASE_URL', 'POWERSYNC_SUPABASE_URL') || 'https://example.supabase.co'
+const SUPABASE_ANON_KEY = getEnvOrEmpty('VITE_SUPABASE_ANON_KEY', 'POWERSYNC_SUPABASE_ANON_KEY') || 'test-anon-key'
 
 const TEST_TIMEOUT_MS = 30_000
 export const BASE_URL = BASE_HTTP
@@ -59,8 +59,10 @@ export default defineConfig({
     cwd: resolve(__dirname),
     env: {
       ...process.env,
-  VITE_POWERSYNC_DISABLED: process.env.VITE_POWERSYNC_DISABLED ?? 'false',
+      VITE_POWERSYNC_DISABLED: process.env.VITE_POWERSYNC_DISABLED ?? 'true',
       VITE_POWERSYNC_USE_FIXTURES: process.env.VITE_POWERSYNC_USE_FIXTURES ?? 'true',
+      VITE_POWERSYNC_USE_DAEMON: process.env.VITE_POWERSYNC_USE_DAEMON ?? 'true',
+      VITE_POWERSYNC_REQUIRE_VAULT: process.env.VITE_POWERSYNC_REQUIRE_VAULT ?? 'false',
       VITE_SUPABASE_URL: SUPABASE_URL,
       VITE_SUPABASE_ANON_KEY: SUPABASE_ANON_KEY,
     },

@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 import { addPowerSyncRemote, syncPowerSyncRepository, seedDemoRepository } from './index.js'
-import { loginWithExplicitToken, loginWithSupabasePassword, logout as logoutSession } from './auth/login.js'
+import {
+  loginWithDaemonDevice,
+  loginWithDaemonGuest,
+  logout as logoutSession,
+} from './auth/login.js'
 
 interface LoginCliOptions {
   endpoint?: string
   token?: string
   sessionPath?: string
-  mode: 'auto' | 'manual'
+  mode: 'auto' | 'manual' | 'guest'
   supabaseEmail?: string
   supabasePassword?: string
   supabaseUrl?: string
   supabaseAnonKey?: string
+  daemonUrl?: string
 }
 
 const [, , cmd, ...rest] = process.argv
@@ -75,6 +80,9 @@ function parseLoginArgs(args: string[]): LoginCliOptions {
       case '--session':
         options.sessionPath = args[++i]
         break
+      case '--daemon-url':
+        options.daemonUrl = args[++i]
+        break
       case '--supabase-email':
         options.supabaseEmail = args[++i]
         break
@@ -86,6 +94,9 @@ function parseLoginArgs(args: string[]): LoginCliOptions {
         break
       case '--supabase-anon-key':
         options.supabaseAnonKey = args[++i]
+        break
+      case '--guest':
+        options.mode = 'guest'
         break
       case '--manual':
         options.mode = 'manual'
@@ -120,75 +131,136 @@ async function handleLogin(args: string[]) {
   const options = parseLoginArgs(args)
 
   if (options.mode === 'manual') {
-    const result = await loginWithExplicitToken({
+    if (!options.token) {
+      console.error('Manual login requires --token.')
+      process.exit(2)
+    }
+    const { baseUrl, status } = await loginWithDaemonGuest({
+      daemonUrl: options.daemonUrl,
       endpoint: options.endpoint,
       token: options.token,
-      sessionPath: options.sessionPath,
+      metadata: { source: 'manual' },
     })
-    console.log('✅ Stored PowerSync credentials from provided token.')
-    console.log(`   Endpoint: ${result.credentials.endpoint}`)
-    if (result.credentials.expiresAt) {
-      console.log(`   Expires:  ${result.credentials.expiresAt}`)
+    if (!status) {
+      throw new Error(`Daemon at ${baseUrl} did not return an auth status.`)
+    }
+    if (status.status !== 'ready') {
+      throw new Error(
+        `Daemon reported ${status.status} while processing manual token${
+          status.reason ? ` (${status.reason})` : ''
+        }.`,
+      )
+    }
+    console.log('✅ PowerSync daemon accepted manual token.')
+    console.log(`   Endpoint: ${options.endpoint ?? 'auto'}`)
+    if (status.expiresAt) {
+      console.log(`   Expires:  ${status.expiresAt}`)
     }
     return
   }
 
-  const hasSupabasePasswordConfig =
-    options.supabaseEmail != null ||
-    options.supabasePassword != null ||
-    process.env.POWERSYNC_SUPABASE_EMAIL != null ||
-    process.env.POWERSYNC_SUPABASE_PASSWORD != null ||
-    process.env.PSGIT_TEST_SUPABASE_EMAIL != null ||
-    process.env.PSGIT_TEST_SUPABASE_PASSWORD != null
-
-  if (hasSupabasePasswordConfig) {
-    const result = await loginWithSupabasePassword({
-      endpoint: options.endpoint,
-      sessionPath: options.sessionPath,
-      supabaseEmail: options.supabaseEmail,
-      supabasePassword: options.supabasePassword,
-      supabaseUrl: options.supabaseUrl,
-      supabaseAnonKey: options.supabaseAnonKey,
-    })
-
-    console.log('✅ Retrieved PowerSync credentials via Supabase password login.')
-    console.log(`   Endpoint: ${result.credentials.endpoint}`)
-    if (result.credentials.expiresAt) {
-      console.log(`   Expires:  ${result.credentials.expiresAt}`)
-    }
-    return
-  }
-
-  const hasDirectToken =
-    options.token != null ||
-    process.env.POWERSYNC_TOKEN != null ||
-    process.env.PSGIT_TEST_REMOTE_TOKEN != null
-
-  if (hasDirectToken) {
-    const result = await loginWithExplicitToken({
+  if (options.mode === 'guest') {
+    const { baseUrl, status } = await loginWithDaemonGuest({
+      daemonUrl: options.daemonUrl,
       endpoint: options.endpoint,
       token: options.token,
-      sessionPath: options.sessionPath,
     })
-    console.log('✅ Stored PowerSync credentials from configured token.')
-    console.log(`   Endpoint: ${result.credentials.endpoint}`)
-    if (result.credentials.expiresAt) {
-      console.log(`   Expires:  ${result.credentials.expiresAt}`)
+    if (!status) {
+      throw new Error(`Daemon at ${baseUrl} did not return an auth status.`)
+    }
+    if (status.status === 'ready') {
+      console.log('✅ Daemon joined as guest.')
+      if (status.expiresAt) {
+        console.log(`   Expires: ${status.expiresAt}`)
+      }
+      return
+    }
+    if (status.status === 'pending') {
+      console.log('Daemon reports authentication pending. Complete the guest provisioning and rerun `psgit login --guest`.')
+      if (status.reason) {
+        console.log(`Reason: ${status.reason}`)
+      }
+      process.exit(1)
+    }
+    const reason = status.reason ? ` (${status.reason})` : ''
+    throw new Error(`Daemon guest login failed with status ${status.status}${reason}.`)
+  }
+
+  if (
+    options.supabaseEmail ||
+    options.supabasePassword ||
+    options.supabaseUrl ||
+    options.supabaseAnonKey
+  ) {
+    console.warn('[psgit] Supabase credential flags are no longer supported; routing login through daemon device flow.')
+  }
+
+  const loginResult = await loginWithDaemonDevice({
+    daemonUrl: options.daemonUrl,
+    endpoint: options.endpoint,
+  })
+
+  const explainChallenge = (prefix: string, challenge = loginResult.challenge) => {
+    if (!challenge) return
+    console.log(prefix)
+    if (challenge.verificationUrl) {
+      console.log(`   Open: ${challenge.verificationUrl}`)
+    }
+    console.log(`   Device code: ${challenge.challengeId}`)
+    if (challenge.expiresAt) {
+      console.log(`   Expires: ${challenge.expiresAt}`)
+    }
+  }
+
+  const initialStatus = loginResult.initialStatus
+  if (initialStatus?.status === 'pending' && initialStatus.reason) {
+    console.log(`Daemon requested interactive login: ${initialStatus.reason}`)
+  }
+  if (initialStatus?.status === 'pending') {
+    explainChallenge('To finish authentication:')
+  }
+
+  const finalStatus = loginResult.finalStatus
+  if (!finalStatus) {
+    throw new Error('Daemon did not provide an auth status. Check daemon logs for details.')
+  }
+
+  if (finalStatus.status === 'ready') {
+    console.log('✅ PowerSync daemon authenticated successfully.')
+    if (finalStatus.expiresAt) {
+      console.log(`   Expires: ${finalStatus.expiresAt}`)
     }
     return
   }
 
-  throw new Error(
-    'Automatic login requires either Supabase credentials (email/password) or a PowerSync token. Provide --token/--endpoint with --manual, or set POWERSYNC_SUPABASE_* variables for password login.',
-  )
+  if (finalStatus.status === 'error' || finalStatus.status === 'auth_required') {
+    const reason = finalStatus.reason ? ` (${finalStatus.reason})` : ''
+    throw new Error(`Daemon reported ${finalStatus.status}${reason}.`)
+  }
+
+  if (loginResult.timedOut) {
+    const reason = finalStatus.reason ? ` (${finalStatus.reason})` : ''
+    explainChallenge('Authentication is still pending; complete the flow in your browser or Explorer.')
+    throw new Error(`Timed out waiting for daemon authentication${reason}.`)
+  }
+
+  console.log('Daemon authentication still pending. Complete the browser/device flow and rerun `psgit login`.')
+  if (finalStatus.reason) {
+    console.log(`Reason: ${finalStatus.reason}`)
+  }
+  explainChallenge('Pending device challenge:')
+  process.exit(1)
 }
 
 async function handleLogout(args: string[]) {
   let sessionPath: string | undefined
+  let daemonUrl: string | undefined
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
     if (arg === '--session') {
       sessionPath = args[++i]
+    } else if (arg === '--daemon-url') {
+      daemonUrl = args[++i]
     } else if (arg === '--help' || arg === '-h') {
       printLogoutUsage()
       process.exit(0)
@@ -199,7 +271,7 @@ async function handleLogout(args: string[]) {
     }
   }
 
-  await logoutSession({ sessionPath })
+  await logoutSession({ sessionPath, daemonUrl })
   console.log('✅ Cleared stored PowerSync credentials.')
 }
 
@@ -281,25 +353,23 @@ function printUsage() {
   console.log('  psgit remote add powersync powersync::https://<endpoint>/orgs/<org>/repos/<repo>')
   console.log('  psgit sync [--remote <name>]')
   console.log('  psgit demo-seed [--remote-url <url>] [--remote <name>] [--branch <branch>] [--skip-sync] [--keep-repo]')
-  console.log('  psgit login [--manual] [--token <jwt>] [--endpoint <url>]')
-  console.log('  psgit logout')
+  console.log('  psgit login [--guest] [--manual --token <jwt>] [--endpoint <url>] [--daemon-url <url>]')
+  console.log('  psgit logout [--daemon-url <url>]')
 }
 
 function printLoginUsage() {
   console.log('Usage: psgit login [options]')
-  console.log('  --manual                 Use manual mode (requires --token).')
-  console.log('  --token <jwt>            PowerSync access token to store locally.')
-  console.log('  --endpoint <url>         Override PowerSync endpoint when using --manual.')
-  console.log('  --session <path>         Override credential cache path.')
-  console.log('  --supabase-email <email> Supabase user email for password-based login.')
-  console.log('  --supabase-password <pw> Supabase user password for password-based login.')
-  console.log('  --supabase-url <url>     Override Supabase project URL for password-based login.')
-  console.log('  --supabase-anon-key <k>  Override Supabase anon/service key for password-based login.')
-  console.log('  --manual / --auto        Force manual or automatic mode.')
+  console.log('  --manual                 Provide an explicit PowerSync token via --token.')
+  console.log('  --guest                  Request guest access via the daemon.')
+  console.log('  --token <jwt>            PowerSync access token forwarded to the daemon (manual mode).')
+  console.log('  --endpoint <url>         Override PowerSync endpoint hint for the daemon.')
+  console.log('  --daemon-url <url>       Override daemon URL (default http://127.0.0.1:5030).')
+  console.log('  --session <path>         Override legacy credential cache path (deprecated).')
+  console.log('  --manual / --auto        Force manual or automatic (device) mode.')
 }
 
 function printLogoutUsage() {
-  console.log('Usage: psgit logout [--session <path>]')
+  console.log('Usage: psgit logout [--session <path>] [--daemon-url <url>]')
 }
 
 function printSeedUsage() {

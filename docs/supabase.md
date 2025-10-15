@@ -14,6 +14,9 @@ The PowerSync-first architecture stores Git metadata in Supabase while the Power
 | `POWERSYNC_SUPABASE_EMAIL` | Supabase user email used by the CLI/daemon for password-based login in development. |
 | `POWERSYNC_SUPABASE_PASSWORD` | Matching Supabase user password; exported automatically by `pnpm dev:stack`. |
 | `POWERSYNC_SUPABASE_JWT_SECRET` | The Supabase JWT secret required by the PowerSync service and daemon. |
+| `POWERSYNC_DAEMON_DEVICE_URL` | Optional verification URL the daemon prints for device flows (e.g. `http://localhost:5173/auth`). |
+| `POWERSYNC_DAEMON_DEVICE_AUTO_LAUNCH` | When `true`, the daemon attempts to open the verification URL in the default browser. |
+| `POWERSYNC_DAEMON_DEVICE_TTL_MS` | Override (in milliseconds) for how long a device challenge remains valid (default 5 minutes). |
 
 ## Local Development
 
@@ -28,11 +31,13 @@ The PowerSync-first architecture stores Git metadata in Supabase while the Power
    source .env.powersync-stack
    ```
    or `pnpm dev:stack -- --print-exports` if you prefer to inspect them first.
-4. Cache CLI credentials so `psgit` and the daemon can reuse a Supabase-issued JWT:
+4. Start the device flow so `psgit` and the daemon can reuse a Supabase-issued JWT:
    ```bash
    pnpm --filter @pkg/cli login
    ```
-5. Launch the explorer (`pnpm dev`) or other clients. They read PowerSync credentials from your `.env.local` (see `docs/env.local.example`) and talk directly to the PowerSync endpoint; the daemon forwards any mutations to Supabase on your behalf.
+   The CLI prints a device code and, when `POWERSYNC_DAEMON_DEVICE_URL` is set, a ready-to-click URL. Visit the URL in a browser (the explorer exposes `/auth?device_code=…` for development), sign in with the Supabase credentials exported by `pnpm dev:stack`, and the daemon will persist the resulting token.
+
+5. Launch the explorer (`pnpm dev`) or other clients. They read PowerSync credentials from your `.env.local` (see `docs/env.local.example`) and talk directly to the PowerSync endpoint; the daemon forwards any mutations to Supabase on your behalf. The explorer automatically completes pending device challenges when the user signs in, so you can re-run `psgit login` later without leaving the browser.
 
 When you are done, run `pnpm dev:stack stop` (or `supabase stop`) to shut everything down.
 

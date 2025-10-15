@@ -159,3 +159,197 @@ export async function getRepoFixtureStore(page: Page): Promise<Record<string, Re
     return (getter as () => Record<string, RepoFixturePayload>)()
   }, { getterKey: GET_FIXTURE_KEY })
 }
+
+export type DaemonStubStatus = 'ready' | 'auth_required' | 'pending' | 'error'
+
+export interface DaemonStubControls {
+  setStatus: (status: DaemonStubStatus, overrides?: { token?: string; reason?: string | null }) => void
+  getStatus: () => { status: DaemonStubStatus; token: string; reason: string | null }
+}
+
+export async function installDaemonAuthStub(page: Page, options: {
+  initialStatus?: DaemonStubStatus
+  token?: string
+  reason?: string | null
+  readyExpiresAt?: string
+} = {}): Promise<DaemonStubControls> {
+  const state: { status: DaemonStubStatus; token: string; reason: string | null; expiresAt: string } = {
+    status: options.initialStatus ?? 'ready',
+    token: options.token ?? 'daemon-token',
+    reason: options.reason ?? null,
+    expiresAt: options.readyExpiresAt ?? '2099-01-01T00:00:00Z',
+  }
+
+  await page.route('**/auth/status', async (route) => {
+    if (state.status === 'ready') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ready', token: state.token, expiresAt: state.expiresAt }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ status: state.status, reason: state.reason ?? undefined }),
+    })
+  })
+
+  await page.route('**/auth/logout', async (route) => {
+    state.status = 'auth_required'
+    state.reason = 'signed out'
+    await route.fulfill({ status: 204, body: '' })
+  })
+
+  return {
+    setStatus(status, overrides) {
+      state.status = status
+      if (overrides?.token) {
+        state.token = overrides.token
+      }
+      if (status === 'ready') {
+        state.reason = null
+      } else {
+        state.reason = overrides?.reason ?? state.reason ?? null
+      }
+    },
+    getStatus() {
+      return { status: state.status, token: state.token, reason: state.reason }
+    },
+  }
+}
+
+export interface SupabaseMockOptions {
+  userId?: string
+  email?: string
+  accessToken?: string
+  authenticated?: boolean
+}
+
+export async function installSupabaseMock(page: Page, options: SupabaseMockOptions = {}): Promise<void> {
+  const {
+    userId = 'user-123',
+    email = 'user@example.com',
+    accessToken = 'supabase-access-token',
+    authenticated = false,
+  } = options
+  await page.addInitScript(({ baseUserId, baseEmail, baseToken, startAuthenticated }) => {
+    console.log('[SupabaseMock] installing mock client')
+    type MockSession = {
+      access_token: string
+      user: {
+        id: string
+        email: string | null
+      }
+    } | null
+
+    const listeners = new Set<(event: string, nextSession: MockSession) => void>()
+    let session: MockSession = null
+
+    const notify = (event: string, nextSession: MockSession) => {
+      for (const listener of Array.from(listeners)) {
+        try {
+          listener(event, nextSession)
+        } catch (error) {
+          console.warn('[SupabaseMock] listener failed', error)
+        }
+      }
+    }
+
+    const makeSession = (overrideEmail?: string | null): NonNullable<MockSession> => ({
+      access_token: baseToken,
+      user: {
+        id: baseUserId,
+        email: overrideEmail ?? baseEmail,
+      },
+    })
+
+    const auth = {
+      async getSession() {
+        return { data: { session }, error: null }
+      },
+      async signInWithPassword(params?: { email?: string; password?: string }) {
+        const loginEmail = typeof params?.email === 'string' ? params.email : baseEmail
+        session = makeSession(loginEmail)
+        notify('SIGNED_IN', session)
+        return { data: { session }, error: null } as const
+      },
+      async signUp(params?: { email?: string; password?: string }) {
+        const signUpEmail = typeof params?.email === 'string' ? params.email : baseEmail
+        session = makeSession(signUpEmail)
+        notify('SIGNED_IN', session)
+        return { data: { user: session.user, session }, error: null } as const
+      },
+      async signOut() {
+        session = null
+        notify('SIGNED_OUT', session)
+        return { error: null } as const
+      },
+      async resetPasswordForEmail() {
+        return { data: {}, error: null } as const
+      },
+      async updateUser() {
+        return { data: {}, error: null } as const
+      },
+      async signInAnonymously() {
+        session = {
+          access_token: 'anon-access-token',
+          user: {
+            id: 'anon-user',
+            email: null,
+          },
+        }
+        notify('SIGNED_IN', session)
+        return { data: { session }, error: null } as const
+      },
+      onAuthStateChange(callback: (event: string, nextSession: MockSession) => void) {
+        listeners.add(callback)
+        callback('INITIAL_SESSION', session)
+        return {
+          data: {
+            subscription: {
+              unsubscribe() {
+                listeners.delete(callback)
+              },
+            },
+          },
+        } as const
+      },
+    }
+
+    Object.defineProperty(window, '__supabaseMock', {
+      value: { auth },
+      writable: false,
+      enumerable: false,
+      configurable: true,
+    })
+
+    Object.defineProperty(window, '__supabaseMockControls', {
+      value: {
+        getSession: () => session,
+        setSession: (nextSession: MockSession) => {
+          session = nextSession
+          notify('SIGNED_IN', session)
+        },
+        clearSession: () => {
+          session = null
+          notify('SIGNED_OUT', session)
+        },
+      },
+      writable: false,
+      enumerable: false,
+      configurable: true,
+    })
+
+    if (startAuthenticated) {
+      session = makeSession(baseEmail)
+      notify('SIGNED_IN', session)
+    }
+  }, {
+    baseUserId: userId,
+    baseEmail: email,
+    baseToken: accessToken,
+    startAuthenticated: authenticated,
+  })
+}

@@ -6,7 +6,7 @@ export const Route = createFileRoute('/' as any)({
   component: Home,
 })
 
-function Home() {
+export function Home() {
   return (
     <div className="space-y-3">
       <h2 className="text-xl font-semibold">Welcome</h2>
@@ -15,3 +15,5 @@ function Home() {
     </div>
   )
 }
+
+export { Home as HomeComponent }

@@ -1,10 +1,9 @@
 import { test, expect } from './diagnostics'
 import { BASE_URL } from 'playwright.config'
-import { clearRepoFixtures, setRepoFixture, type RepoFixturePayload } from './utils'
+import { clearRepoFixtures, installDaemonAuthStub, installSupabaseMock, setRepoFixture, type RepoFixturePayload } from './utils'
 
 const ORG_ID = 'acme'
 const REPO_ID = 'infra'
-
 const REPO_FIXTURE: RepoFixturePayload = {
   orgId: ORG_ID,
   repoId: REPO_ID,
@@ -47,6 +46,52 @@ const REPO_FIXTURE: RepoFixturePayload = {
 }
 
 test.describe('Explorer repo lists', () => {
+  test.beforeEach(async ({ page }) => {
+    await installDaemonAuthStub(page, { initialStatus: 'ready' })
+    await installSupabaseMock(page, { authenticated: true })
+
+    await page.goto(`${BASE_URL}/`)
+    if (page.url().endsWith('/auth')) {
+      throw new Error('Supabase mock failed to provide authenticated session')
+    }
+
+    if (page.url().startsWith(`${BASE_URL}/vault`)) {
+      await expect(page.getByTestId('vault-heading')).toBeVisible()
+      await page.waitForFunction(() => {
+        const global = window as typeof window & { __vaultControls?: { status: string } }
+        return global.__vaultControls && global.__vaultControls.status !== 'loading'
+      })
+      await page.evaluate(async ({ passphrase }) => {
+        const global = window as typeof window & {
+          __vaultControls?: {
+            status: string
+            createVault: (phrase: string) => Promise<void>
+            unlockVault: (phrase: string) => Promise<void>
+          }
+        }
+        const controls = global.__vaultControls
+        if (!controls) {
+          throw new Error('Vault controls unavailable in test environment')
+        }
+        if (controls.status === 'loading') {
+          return
+        }
+        if (controls.status === 'needsSetup') {
+          await controls.createVault(passphrase)
+        } else if (controls.status === 'locked') {
+          await controls.unlockVault(passphrase)
+        }
+      }, { passphrase: 'correct-horse-battery-staple' })
+      await page.waitForFunction(() => {
+        const global = window as typeof window & { __vaultControls?: { status: string } }
+        return global.__vaultControls?.status === 'unlocked'
+      })
+      await page.waitForFunction(() => window.location.pathname === '/')
+    }
+
+    await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible()
+  })
+
   test.afterEach(async ({ page }) => {
     await clearRepoFixtures(page)
   })

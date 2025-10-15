@@ -29,6 +29,7 @@ export default defineConfig({
     alias: {
       '@ps': resolveFromRoot('src/ps'),
       '@tsdb': resolveFromRoot('src/tsdb'),
+      '@shared/core/powersync/schema': resolveFromRoot('../../shared/src/powersync/schema.ts'),
       '@shared/core': resolveFromRoot('../../shared/src/index.ts'),
       '@shared/core/': `${resolveFromRoot('../../shared/src')}/`,
     },

@@ -5,10 +5,6 @@ vi.mock('simple-git', () => ({
   default: vi.fn(),
 }))
 
-vi.mock('./auth/session.js', () => ({
-  loadStoredCredentials: vi.fn(),
-  isCredentialExpired: vi.fn(),
-}))
 
 vi.mock('@shared/core', async () => {
   const actual = await vi.importActual<typeof import('@shared/core')>('@shared/core')
@@ -21,12 +17,9 @@ vi.mock('@shared/core', async () => {
 
 import simpleGit from 'simple-git'
 import { PowerSyncRemoteClient } from '@shared/core'
-import { loadStoredCredentials, isCredentialExpired } from './auth/session.js'
 import { syncPowerSyncRepository } from './index.js'
 
 const simpleGitMock = simpleGit as unknown as Mock
-const loadStoredCredentialsMock = loadStoredCredentials as unknown as Mock
-const isCredentialExpiredMock = isCredentialExpired as unknown as Mock
 const PowerSyncRemoteClientMock = PowerSyncRemoteClient as unknown as Mock
 
 const mockGetRepoSummary = vi.fn()
@@ -38,16 +31,26 @@ describe('syncPowerSyncRepository', () => {
     simpleGitMock.mockReset()
     PowerSyncRemoteClientMock.mockReset()
     mockGetRepoSummary.mockReset()
-    loadStoredCredentialsMock.mockReset()
-    isCredentialExpiredMock.mockReset()
-
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     PowerSyncRemoteClientMock.mockImplementation(() => ({
       getRepoSummary: mockGetRepoSummary,
     }))
 
-    global.fetch = vi.fn(async () => ({ ok: true })) as unknown as typeof fetch
+    global.fetch = vi
+      .fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : `${input}`
+        if (url.endsWith('/health')) {
+          return { ok: true } as Response
+        }
+        if (url.endsWith('/auth/status')) {
+          return {
+            ok: true,
+            json: async () => ({ status: 'ready' }),
+          } as unknown as Response
+        }
+        return { ok: true } as Response
+      }) as unknown as typeof fetch
   })
 
   afterEach(() => {
@@ -69,12 +72,6 @@ describe('syncPowerSyncRepository', () => {
     }
     simpleGitMock.mockReturnValue(gitApi)
 
-    loadStoredCredentialsMock.mockResolvedValue({
-      endpoint: 'https://daemon.example.com',
-      token: 'token',
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    })
-    isCredentialExpiredMock.mockReturnValue(false)
     mockGetRepoSummary.mockResolvedValue({
       orgId: 'acme',
       repoId: 'infra',
@@ -83,8 +80,6 @@ describe('syncPowerSyncRepository', () => {
 
     const result = await syncPowerSyncRepository('/tmp/repo')
 
-    expect(loadStoredCredentialsMock).toHaveBeenCalled()
-    expect(isCredentialExpiredMock).toHaveBeenCalled()
     expect(PowerSyncRemoteClientMock).toHaveBeenCalledWith({
       endpoint: 'http://127.0.0.1:5030',
       fetchImpl: expect.any(Function),
@@ -111,11 +106,6 @@ describe('syncPowerSyncRepository', () => {
     }
     simpleGitMock.mockReturnValue(gitApi)
 
-    loadStoredCredentialsMock.mockResolvedValue({
-      endpoint: 'https://daemon.example.com',
-      token: 'token',
-    })
-    isCredentialExpiredMock.mockReturnValue(false)
     mockGetRepoSummary.mockResolvedValue({
       orgId: 'team',
       repoId: 'runtime',

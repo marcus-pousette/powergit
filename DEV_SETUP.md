@@ -58,13 +58,13 @@ Open **Agents.md** for the architecture.
    - `pnpm dev:stack:down` is a shorthand for `pnpm dev:stack stop -- --log` if you prefer the legacy alias.
    - Need a dry run? `pnpm dev:stack -- --dry-run` prints each step without executing it.
 
-5. **Authenticate the CLI** so `psgit` can reuse credentials:
+5. **Authenticate the daemon/CLI** so Git commands can reuse credentials:
 
    ```bash
    pnpm --filter @pkg/cli login
    ```
 
-   The command performs a Supabase password login (using the credentials exported by `pnpm dev:stack`) and caches the resulting JWT under `~/.psgit/session.json`. Future CLI commands reuse the cached token automatically. To inspect the stored credentials or clear them, run `psgit login --manual ...` or `psgit logout`.
+   The command now initiates a **device flow**. It prints a device code (and, when `POWERSYNC_DAEMON_DEVICE_URL` is set, a verification URL) and waits for the daemon to receive a Supabase token. Open the explorer at the printed URL (or visit `http://localhost:5173/auth?device_code=…` manually), sign in with the Supabase user exported by `pnpm dev:stack`, and the explorer will hand the fresh Supabase token to the daemon automatically. Once the CLI reports `PowerSync daemon authenticated successfully`, it is safe to close the browser tab. Future CLI commands reuse the daemon’s cached credentials; clear them with `psgit logout`.
 
 6. **Launch the explorer UI** in another terminal:
 

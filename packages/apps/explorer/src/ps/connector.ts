@@ -1,10 +1,46 @@
 import type { PowerSyncBackendConnector, PowerSyncCredentials, AbstractPowerSyncDatabase } from '@powersync/web'
 
+interface ConnectorOptions {
+  getToken?: () => Promise<string | null>
+  endpoint?: string | null
+}
+
+function resolveEnv(name: string): string | null {
+  const env = import.meta.env as Record<string, string | undefined>
+  const value = env[name]
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
 export class Connector implements PowerSyncBackendConnector {
+  private readonly endpoint: string | null
+  private readonly getToken: () => Promise<string | null>
+
+  constructor(options?: ConnectorOptions) {
+    const fallbackEndpoint = resolveEnv('VITE_POWERSYNC_ENDPOINT')
+    const fallbackToken = resolveEnv('VITE_POWERSYNC_TOKEN')
+
+    this.endpoint = options?.endpoint?.trim() || fallbackEndpoint || null
+    this.getToken =
+      options?.getToken ??
+      (async () => {
+        if (fallbackToken) return fallbackToken
+        return null
+      })
+  }
+
   async fetchCredentials(): Promise<PowerSyncCredentials> {
+    if (!this.endpoint) {
+      throw new Error('PowerSync endpoint is not configured. Set VITE_POWERSYNC_ENDPOINT to continue.')
+    }
+    const token = await this.getToken()
+    if (!token) {
+      throw new Error('PowerSync token is not available. Sign in or configure VITE_POWERSYNC_TOKEN.')
+    }
+
     return {
-      endpoint: import.meta.env.VITE_POWERSYNC_ENDPOINT || 'https://YOUR-POWERSYNC-ENDPOINT',
-      token: import.meta.env.VITE_POWERSYNC_TOKEN || 'DEV_TOKEN_PLACEHOLDER',
+      endpoint: this.endpoint,
+      token,
     }
   }
 

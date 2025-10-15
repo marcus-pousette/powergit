@@ -17,6 +17,7 @@ export class DaemonPowerSyncConnector implements PowerSyncBackendConnector {
   private readonly credentialsProvider?: () => Promise<PowerSyncCredentials | null>;
   private readonly uploadHandler?: (db: AbstractPowerSyncDatabase) => Promise<void>;
   private warnedMissingUpload = false;
+  private notifiedMissingCredentials = false;
 
   constructor(options: DaemonConnectorOptions = {}) {
     this.endpoint = options.endpoint;
@@ -27,20 +28,28 @@ export class DaemonPowerSyncConnector implements PowerSyncBackendConnector {
 
   async fetchCredentials(): Promise<PowerSyncCredentials | null> {
     if (this.endpoint && this.token) {
+      this.notifiedMissingCredentials = false;
       return { endpoint: this.endpoint, token: this.token };
     }
 
     if (this.credentialsProvider) {
-      const credentials = await this.credentialsProvider().catch((error) => {
+      try {
+        const credentials = await this.credentialsProvider();
+        if (credentials) {
+          this.notifiedMissingCredentials = false;
+          return credentials;
+        }
+      } catch (error) {
         console.warn('[powersync-daemon] credential provider rejected', error);
-        return null;
-      });
-      if (credentials) {
-        return credentials;
       }
     }
 
-    console.error('[powersync-daemon] missing PowerSync credentials; set POWERSYNC_DAEMON_ENDPOINT and POWERSYNC_DAEMON_TOKEN');
+    if (!this.notifiedMissingCredentials) {
+      console.warn(
+        '[powersync-daemon] missing PowerSync credentials; authenticate via /auth/device or /auth/guest before syncing',
+      );
+      this.notifiedMissingCredentials = true;
+    }
     return null;
   }
 

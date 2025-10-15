@@ -10,7 +10,7 @@ export const Route = createFileRoute('/org/$orgId/' as any)({
   component: OrgActivity,
 })
 
-function OrgActivity() {
+export function OrgActivity() {
   const { orgId } = Route.useParams()
   const { refs } = useCollections()
   // Temporarily disabled due to TanStack DB 0.4.3 API changes
@@ -49,3 +49,5 @@ function OrgActivity() {
     </div>
   )
 }
+
+export { OrgActivity as OrgActivityComponent }

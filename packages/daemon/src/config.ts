@@ -5,6 +5,8 @@ import { promises as fs } from 'node:fs';
 export interface DaemonConfig {
   /** Absolute path to the daemon SQLite replica. */
   dbPath: string;
+  /** Absolute path to the cached authentication session file. */
+  authSessionPath: string;
   /** PowerSync service endpoint (https://host). */
   endpoint?: string;
   /** PowerSync JWT or service token. */
@@ -21,6 +23,12 @@ export interface DaemonConfig {
     serviceRoleKey: string;
     schema?: string;
   };
+  /** Optional authentication options (device/browser flows). */
+  auth?: {
+    deviceVerificationUrl?: string | null;
+    deviceAutoLaunch?: boolean;
+    deviceChallengeTtlMs?: number;
+  };
 }
 
 export interface ResolveDaemonConfigOptions {
@@ -33,9 +41,14 @@ export interface ResolveDaemonConfigOptions {
   supabaseUrl?: string;
   supabaseServiceRoleKey?: string;
   supabaseSchema?: string;
+  authSessionPath?: string;
+  deviceVerificationUrl?: string;
+  deviceAutoLaunch?: boolean;
+  deviceChallengeTtlMs?: number;
 }
 
 const DEFAULT_DB_RELATIVE_PATH = '.powersync/daemon/powersync-daemon.db';
+const DEFAULT_SESSION_RELATIVE_PATH = '.psgit/session.json';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 5030;
 
@@ -54,6 +67,14 @@ async function ensureDirectoryExists(targetPath: string): Promise<void> {
 export async function resolveDaemonConfig(options: ResolveDaemonConfigOptions = {}): Promise<DaemonConfig> {
   const dbPath = resolve(options.dbPath ?? process.env.POWERSYNC_DAEMON_DB_PATH ?? resolve(homedir(), DEFAULT_DB_RELATIVE_PATH));
   await ensureDirectoryExists(dirname(dbPath));
+
+  const resolvedSessionPath = resolve(
+    options.authSessionPath ??
+      process.env.POWERSYNC_DAEMON_SESSION_PATH ??
+      process.env.PSGIT_SESSION_PATH ??
+      resolve(homedir(), DEFAULT_SESSION_RELATIVE_PATH),
+  );
+  await ensureDirectoryExists(dirname(resolvedSessionPath));
 
   const endpoint = options.endpoint ?? process.env.POWERSYNC_DAEMON_ENDPOINT ?? process.env.POWERSYNC_ENDPOINT ?? undefined;
   const token = options.token ?? process.env.POWERSYNC_DAEMON_TOKEN ?? process.env.POWERSYNC_TOKEN ?? undefined;
@@ -85,13 +106,41 @@ export async function resolveDaemonConfig(options: ResolveDaemonConfigOptions = 
       ? { url: supabaseUrl, serviceRoleKey: supabaseServiceRoleKey, schema: supabaseSchema }
       : undefined;
 
+  const deviceVerificationUrl =
+    options.deviceVerificationUrl ??
+    process.env.POWERSYNC_DAEMON_DEVICE_URL ??
+    process.env.POWERSYNC_DAEMON_DEVICE_VERIFICATION_URL ??
+    undefined;
+  const deviceAutoLaunchEnv =
+    options.deviceAutoLaunch ??
+    (process.env.POWERSYNC_DAEMON_DEVICE_AUTO_LAUNCH
+      ? process.env.POWERSYNC_DAEMON_DEVICE_AUTO_LAUNCH.toLowerCase() === 'true'
+      : undefined);
+  const deviceChallengeTtlMsEnv =
+    options.deviceChallengeTtlMs ??
+    (process.env.POWERSYNC_DAEMON_DEVICE_TTL_MS ? Number(process.env.POWERSYNC_DAEMON_DEVICE_TTL_MS) : undefined);
+
+  const auth =
+    deviceVerificationUrl || deviceAutoLaunchEnv !== undefined || deviceChallengeTtlMsEnv !== undefined
+      ? {
+          deviceVerificationUrl: deviceVerificationUrl ?? null,
+          deviceAutoLaunch: deviceAutoLaunchEnv ?? false,
+          deviceChallengeTtlMs:
+            deviceChallengeTtlMsEnv !== undefined && Number.isFinite(deviceChallengeTtlMsEnv)
+              ? Number(deviceChallengeTtlMsEnv)
+              : undefined,
+        }
+      : undefined;
+
   return {
     dbPath,
+    authSessionPath: resolvedSessionPath,
     endpoint,
     token,
     initialStreams: explicitStreams,
     host,
     port,
     supabase,
+    auth,
   };
 }

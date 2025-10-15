@@ -1,0 +1,216 @@
+import { getAccessToken } from './supabase'
+
+const DEFAULT_DAEMON_URL = 'http://127.0.0.1:8787'
+const REQUEST_TIMEOUT_MS = 5_000
+
+function readEnvFlag(name: string, fallback = 'false') {
+  const env = import.meta.env as Record<string, string | undefined>
+  return (env[name]?.trim() ?? fallback).toLowerCase() === 'true'
+}
+
+function readEnvString(name: string): string | null {
+  const env = import.meta.env as Record<string, string | undefined>
+  const value = env[name]
+  if (!value) return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+const daemonBaseUrl = readEnvString('VITE_POWERSYNC_DAEMON_URL') ?? DEFAULT_DAEMON_URL
+const daemonEnabled = readEnvFlag('VITE_POWERSYNC_USE_DAEMON')
+export function isDaemonEnabled(): boolean {
+  return daemonEnabled
+}
+
+type DaemonAuthStatusPayload = {
+  status: 'ready' | 'pending' | 'auth_required' | 'error'
+  token?: string | { token?: string; value?: string }
+  expiresAt?: string | null
+  reason?: string | null
+  context?: Record<string, unknown> | null
+}
+
+export type DaemonAuthStatus =
+  | { status: 'ready'; token: string; expiresAt?: string | null; context?: Record<string, unknown> | null }
+  | { status: 'pending'; reason?: string | null; context?: Record<string, unknown> | null }
+  | { status: 'auth_required'; reason?: string | null; context?: Record<string, unknown> | null }
+  | { status: 'error'; reason?: string | null; context?: Record<string, unknown> | null }
+
+function normalizeToken(raw: DaemonAuthStatusPayload['token']): string | null {
+  if (!raw) return null
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (typeof raw === 'object') {
+    const fromToken = typeof raw.token === 'string' ? raw.token.trim() : ''
+    if (fromToken) return fromToken
+    const fromValue = typeof raw.value === 'string' ? raw.value.trim() : ''
+    if (fromValue) return fromValue
+  }
+  return null
+}
+
+function normalizeContext(raw: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null
+  if (typeof raw !== 'object') return null
+  if (Array.isArray(raw)) return null
+  return raw
+}
+
+function normalizeAuthStatus(payload: DaemonAuthStatusPayload | null): DaemonAuthStatus | null {
+  if (!payload) return null
+  switch (payload.status) {
+    case 'ready': {
+      const token = normalizeToken(payload.token)
+      if (!token) {
+        console.warn('[Explorer][daemon] ready status missing token payload')
+        return null
+      }
+      return { status: 'ready', token, expiresAt: payload.expiresAt ?? null, context: normalizeContext(payload.context) }
+    }
+    case 'pending':
+      return { status: 'pending', reason: payload.reason ?? null, context: normalizeContext(payload.context) }
+    case 'auth_required':
+      return { status: 'auth_required', reason: payload.reason ?? null, context: normalizeContext(payload.context) }
+    case 'error':
+      return { status: 'error', reason: payload.reason ?? null, context: normalizeContext(payload.context) }
+    default:
+      console.warn('[Explorer][daemon] unknown auth status received', payload)
+      return null
+  }
+}
+
+async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T | null> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  try {
+    const res = await fetch(input, { ...init, signal: controller.signal })
+    if (!res.ok) {
+      return null
+    }
+    return (await res.json()) as T
+  } catch (error) {
+    console.warn('[Explorer][daemon] request failed', error)
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function postJson(path: string, body?: Record<string, unknown>): Promise<boolean> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  try {
+    const res = await fetch(`${daemonBaseUrl}${path}`, {
+      method: 'POST',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+    return res.ok
+  } catch (error) {
+    console.warn('[Explorer][daemon] POST request failed', error)
+    return false
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function fetchDaemonAuthStatus(): Promise<DaemonAuthStatus | null> {
+  if (!daemonEnabled) {
+    return null
+  }
+  const payload = await fetchJson<DaemonAuthStatusPayload>(`${daemonBaseUrl}/auth/status`)
+  return normalizeAuthStatus(payload)
+}
+
+export interface DaemonDeviceChallenge {
+  challengeId: string
+  verificationUrl?: string | null
+  expiresAt?: string | null
+  mode?: string | null
+}
+
+export function extractDeviceChallenge(status: DaemonAuthStatus | null): DaemonDeviceChallenge | null {
+  if (!status || !status.context) return null
+  const context = status.context as Record<string, unknown>
+  const challengeIdValue =
+    context.challengeId ??
+    context.deviceCode ??
+    (context as { device_code?: unknown }).device_code ??
+    (context as { state?: unknown }).state
+  if (typeof challengeIdValue !== 'string' || !challengeIdValue.trim()) {
+    return null
+  }
+  const challengeId = challengeIdValue.trim()
+  const verificationUrl = typeof context.verificationUrl === 'string' ? context.verificationUrl : null
+  const expiresAt = typeof context.expiresAt === 'string' ? context.expiresAt : null
+  const mode = typeof context.mode === 'string' ? context.mode : null
+  return { challengeId, verificationUrl, expiresAt, mode }
+}
+
+export async function getDaemonToken(): Promise<string | null> {
+  if (!daemonEnabled) {
+    return null
+  }
+
+  const status = await fetchDaemonAuthStatus()
+
+  if (!status) {
+    return null
+  }
+
+  if (status.status === 'ready') {
+    return status.token
+  }
+
+  if (status.status === 'auth_required') {
+    console.warn('[Explorer][daemon] authentication required; daemon has no PowerSync token available')
+  } else if (status.status === 'pending') {
+    console.info('[Explorer][daemon] authentication pending; waiting for daemon to complete login flow')
+  } else if (status.status === 'error') {
+    console.warn('[Explorer][daemon] daemon reported auth error', status.reason ?? '')
+  }
+
+  return null
+}
+
+export async function obtainPowerSyncToken(): Promise<string | null> {
+  if (daemonEnabled) {
+    return getDaemonToken()
+  }
+  return getAccessToken()
+}
+
+export async function notifyDaemonLogout(): Promise<boolean> {
+  if (!daemonEnabled) {
+    return false
+  }
+  return postJson('/auth/logout').catch(() => false)
+}
+
+export function isDaemonPreferred(): boolean {
+  return daemonEnabled
+}
+
+export async function completeDaemonDeviceLogin(payload: {
+  challengeId: string
+  token: string
+  endpoint?: string | null
+  expiresAt?: string | null
+  obtainedAt?: string | null
+  metadata?: Record<string, unknown> | null
+}): Promise<boolean> {
+  if (!daemonEnabled) return false
+  return postJson('/auth/device', {
+    challengeId: payload.challengeId,
+    token: payload.token,
+    endpoint: payload.endpoint ?? null,
+    expiresAt: payload.expiresAt ?? null,
+    obtainedAt: payload.obtainedAt ?? null,
+    metadata: payload.metadata ?? null,
+  })
+}

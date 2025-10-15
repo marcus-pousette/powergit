@@ -5,14 +5,13 @@ import { join, resolve, dirname } from 'node:path'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { PowerSyncRemoteClient, RAW_TABLE_SPECS, type RepoDataSummary, parsePowerSyncUrl } from '@shared/core'
-import { loadStoredCredentials, isCredentialExpired } from './auth/session.js'
 
 const STREAM_SUFFIXES = ['refs', 'commits', 'file_changes', 'objects'] as const
 type StreamSuffix = typeof STREAM_SUFFIXES[number]
 const DEFAULT_SEED_BRANCH = 'main'
 const DEFAULT_SEED_AUTHOR = { name: 'PowerSync Seed Bot', email: 'seed@powersync.test' }
 
-const DEFAULT_DAEMON_URL =
+export const DEFAULT_DAEMON_URL =
   process.env.POWERSYNC_DAEMON_URL ??
   process.env.POWERSYNC_DAEMON_ENDPOINT ??
   'http://127.0.0.1:5030'
@@ -143,6 +142,13 @@ export interface SyncCommandResult {
   databasePath?: string | null
 }
 
+type DaemonAuthStatusCheck =
+  | { status: 'ready'; reason?: string | null }
+  | { status: 'pending'; reason?: string | null }
+  | { status: 'auth_required'; reason?: string | null }
+  | { status: 'error'; reason?: string | null }
+  | null
+
 export async function syncPowerSyncRepository(dir: string, options: SyncCommandOptions = {}): Promise<SyncCommandResult> {
   const remoteName = options.remoteName ?? process.env.REMOTE_NAME ?? 'origin'
   const git = simpleGit({ baseDir: dir })
@@ -159,23 +165,15 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
 
   const { endpoint, org, repo } = parsePowerSyncUrl(candidateUrl)
 
-  const storedCredentials = await loadStoredCredentials(options.sessionPath).catch(() => null)
-  if (!storedCredentials?.endpoint || !storedCredentials?.token) {
-    throw new Error('[psgit] missing cached PowerSync credentials. Run `psgit login` before syncing.')
-  }
-  if (isCredentialExpired(storedCredentials)) {
-    throw new Error('Cached PowerSync credentials have expired. Run `psgit login` to refresh.')
-  }
-
-  if (!process.env.POWERSYNC_DAEMON_ENDPOINT) {
-    process.env.POWERSYNC_DAEMON_ENDPOINT = storedCredentials.endpoint
-  }
-  if (!process.env.POWERSYNC_DAEMON_TOKEN) {
-    process.env.POWERSYNC_DAEMON_TOKEN = storedCredentials.token
-  }
-
   const daemonBaseUrl = normalizeBaseUrl(options.daemonUrl ?? process.env.POWERSYNC_DAEMON_URL ?? DEFAULT_DAEMON_URL)
   await ensureDaemonReady(daemonBaseUrl)
+  const authStatus = await fetchDaemonAuthStatus(daemonBaseUrl)
+  if (!authStatus || authStatus.status !== 'ready') {
+    const reason = authStatus?.reason ? ` (${authStatus.reason})` : ''
+    throw new Error(
+      `[psgit] PowerSync daemon is not authenticated${reason}. Run \`psgit login\` to authorise the daemon.`,
+    )
+  }
 
   const client = new PowerSyncRemoteClient({
     endpoint: daemonBaseUrl,
@@ -197,11 +195,11 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
   }
 }
 
-function normalizeBaseUrl(value: string): string {
+export function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, '')
 }
 
-async function ensureDaemonReady(baseUrl: string): Promise<void> {
+export async function ensureDaemonReady(baseUrl: string): Promise<void> {
   if (await isDaemonResponsive(baseUrl)) {
     return
   }
@@ -252,4 +250,29 @@ function launchDaemon(): void {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function fetchDaemonAuthStatus(baseUrl: string): Promise<DaemonAuthStatusCheck> {
+  try {
+    const controller = new AbortController()
+    const timeoutMs = Number.parseInt(process.env.POWERSYNC_DAEMON_CHECK_TIMEOUT_MS ?? '2000', 10)
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    const response = await fetch(`${baseUrl}/auth/status`, { signal: controller.signal })
+    clearTimeout(timeout)
+    if (!response.ok) {
+      return null
+    }
+    const payload = (await response.json().catch(() => null)) as { status?: unknown; reason?: unknown } | null
+    if (!payload || typeof payload.status !== 'string') {
+      return null
+    }
+    const status = payload.status
+    if (status !== 'ready' && status !== 'pending' && status !== 'auth_required' && status !== 'error') {
+      return null
+    }
+    const reason = typeof payload.reason === 'string' ? payload.reason : null
+    return { status, reason }
+  } catch {
+    return null
+  }
 }

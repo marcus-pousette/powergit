@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import type { PowerSyncDatabase, SyncStreamSubscription } from '@powersync/node';
+import { DaemonAuthManager, type AuthStatusPayload } from './auth/index.js';
+import { DeviceAuthCoordinator } from './auth/device-flow.js';
 import { resolveDaemonConfig, type ResolveDaemonConfigOptions } from './config.js';
 import { DaemonPowerSyncConnector } from './connector.js';
 import { connectWithSchemaRecovery, createPowerSyncDatabase } from './database.js';
@@ -85,10 +87,69 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   console.info(`[powersync-daemon] starting (db: ${config.dbPath})`);
 
   const startedAt = new Date();
+
+  const initialCredentials =
+    config.endpoint && config.token
+      ? {
+          endpoint: config.endpoint,
+          token: config.token,
+          authType: 'env' as const,
+        }
+      : undefined;
+
+  const authManager = await DaemonAuthManager.create({
+    sessionPath: config.authSessionPath,
+    defaultEndpoint: config.endpoint,
+    initialCredentials,
+  });
+
+  const deviceCoordinator = new DeviceAuthCoordinator({
+    authManager,
+    verificationUrl: config.auth?.deviceVerificationUrl ?? null,
+    autoLaunch: config.auth?.deviceAutoLaunch ?? false,
+    challengeTtlMs: config.auth?.deviceChallengeTtlMs,
+    logger: (message) => console.info('[powersync-daemon][auth]', message),
+  });
+
+  let running = true;
+  let streamCount = 0;
+  const abortController = new AbortController();
+  const requestShutdown = (reason: string) => {
+    if (abortController.signal.aborted) return;
+    running = false;
+    console.info(`[powersync-daemon] shutdown requested (${reason}); shutting down`);
+    abortController.abort();
+  };
+
+  const authUnsubscribe = authManager.subscribe((state) => {
+    switch (state.status) {
+      case 'ready':
+        console.info('[powersync-daemon] authentication ready; token obtained');
+        break;
+      case 'pending':
+        console.info('[powersync-daemon] authentication pending', state.reason ?? '');
+        break;
+      case 'auth_required':
+        console.info('[powersync-daemon] authentication required', state.reason ?? '');
+        break;
+      case 'error':
+        console.warn('[powersync-daemon] authentication error', state.reason ?? '');
+        break;
+      default:
+        break;
+    }
+  });
+
   const database = await createPowerSyncDatabase({ dbPath: config.dbPath });
+
   const connector = new DaemonPowerSyncConnector({
-    endpoint: config.endpoint,
-    token: config.token,
+    credentialsProvider: async () => {
+      const credentials = await authManager.waitForCredentials({ signal: abortController.signal });
+      if (!credentials) {
+        return null;
+      }
+      return { endpoint: credentials.endpoint, token: credentials.token };
+    },
   });
 
   await ensureLocalSchema(database);
@@ -101,16 +162,6 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
 
   const connectedAt = new Date();
   console.info('[powersync-daemon] connected to PowerSync backend');
-
-  let running = true;
-  let streamCount = 0;
-  const abortController = new AbortController();
-  const requestShutdown = (reason: string) => {
-    if (abortController.signal.aborted) return;
-    running = false;
-    console.info(`[powersync-daemon] shutdown requested (${reason}); shutting down`);
-    abortController.abort();
-  };
 
   const subscriptions = await subscribeToInitialStreams(config.initialStreams, database);
   streamCount = subscriptions.length;
@@ -126,6 +177,200 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     supabaseWriter.start();
   }
 
+  type AuthActionResponse = AuthStatusPayload & { httpStatus?: number };
+
+  const coerceString = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const coerceMetadata = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  };
+
+  const extractChallengeId = (payload: Record<string, unknown>): string | null => {
+    const direct =
+      coerceString(payload.challengeId) ??
+      coerceString(payload.deviceCode) ??
+      coerceString((payload as { device_code?: unknown }).device_code) ??
+      coerceString(payload.code) ??
+      coerceString(payload.state);
+    if (direct) return direct;
+
+    const metadata = coerceMetadata(payload.metadata);
+    if (!metadata) return null;
+
+    return (
+      coerceString(metadata.challengeId) ??
+      coerceString(metadata.deviceCode) ??
+      coerceString((metadata as { device_code?: unknown }).device_code) ??
+      null
+    );
+  };
+
+  const extractToken = (payload: Record<string, unknown>): string | null => {
+    const direct = coerceString(payload.token);
+    if (direct) return direct;
+
+    const tokenRecord = coerceMetadata(payload.token);
+    if (tokenRecord) {
+      const nested = coerceString(tokenRecord.token) ?? coerceString(tokenRecord.value);
+      if (nested) return nested;
+    }
+
+    const credentialsRecord = coerceMetadata(payload.credentials);
+    if (credentialsRecord) {
+      const nested = coerceString(credentialsRecord.token) ?? coerceString(credentialsRecord.value);
+      if (nested) return nested;
+    }
+
+    const accessToken = coerceString(payload.accessToken) ?? coerceString(payload.value);
+    if (accessToken) return accessToken;
+
+    return null;
+  };
+
+  const extractEndpoint = (payload: Record<string, unknown>): string | null => {
+    return (
+      coerceString(payload.endpoint) ??
+      coerceString(payload.endpointUrl) ??
+      coerceString(payload.url) ??
+      coerceString(payload.baseUrl) ??
+      (() => {
+        const credentialsRecord = coerceMetadata(payload.credentials);
+        if (!credentialsRecord) return null;
+        return (
+          coerceString(credentialsRecord.endpoint) ??
+          coerceString(credentialsRecord.url) ??
+          coerceString(credentialsRecord.baseUrl) ??
+          null
+        );
+      })()
+    );
+  };
+
+  const fallbackToken = (): string | null => {
+    return (
+      coerceString(process.env.POWERSYNC_DAEMON_GUEST_TOKEN) ??
+      coerceString(process.env.POWERSYNC_DAEMON_TOKEN) ??
+      coerceString(process.env.POWERSYNC_TOKEN)
+    );
+  };
+
+  const fallbackEndpoint = (): string | null => {
+    return (
+      coerceString(authManager.getDefaultEndpoint()) ??
+      coerceString(config.endpoint) ??
+      coerceString(process.env.POWERSYNC_DAEMON_ENDPOINT) ??
+      coerceString(process.env.POWERSYNC_ENDPOINT)
+    );
+  };
+
+  const withStatus = (payload: AuthStatusPayload, httpStatus?: number): AuthActionResponse =>
+    typeof httpStatus === 'number' ? { ...payload, httpStatus } : payload;
+
+  const handleGuestAuth = async (payload: Record<string, unknown>): Promise<AuthActionResponse> => {
+    const token = extractToken(payload) ?? fallbackToken();
+    if (!token) {
+      await authManager.setAuthRequired('Guest login requires a PowerSync token');
+      return withStatus({ status: 'auth_required', reason: 'Guest login requires a PowerSync token' }, 400);
+    }
+
+    const endpoint = extractEndpoint(payload) ?? fallbackEndpoint();
+    if (!endpoint) {
+      await authManager.setAuthRequired('Guest login requires a PowerSync endpoint');
+      return withStatus({ status: 'auth_required', reason: 'Guest login requires a PowerSync endpoint' }, 400);
+    }
+
+    const expiresAt = coerceString(payload.expiresAt);
+    const obtainedAt = coerceString(payload.obtainedAt);
+    const metadata = coerceMetadata(payload.metadata);
+
+    try {
+      await authManager.setReadyCredentials(
+        {
+          endpoint,
+          token,
+          expiresAt: expiresAt ?? undefined,
+          obtainedAt: obtainedAt ?? undefined,
+          metadata: metadata ?? undefined,
+        },
+        { source: 'guest' },
+      );
+      return withStatus(authManager.getStatusPayload(), 200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Guest authentication failed';
+      await authManager.setError(message);
+      return withStatus({ status: 'error', reason: message }, 400);
+    }
+  };
+
+  const handleDeviceAuth = async (payload: Record<string, unknown>): Promise<AuthActionResponse> => {
+    const metadata = coerceMetadata(payload.metadata);
+    const challengeId = extractChallengeId(payload);
+    const token = extractToken(payload);
+
+    if (token) {
+      const endpoint = extractEndpoint(payload) ?? fallbackEndpoint();
+      const expiresAt = coerceString(payload.expiresAt);
+      const obtainedAt = coerceString(payload.obtainedAt);
+
+      if (challengeId) {
+        const ok = await deviceCoordinator.complete({
+          challengeId,
+          token,
+          endpoint,
+          expiresAt: expiresAt ?? null,
+          obtainedAt: obtainedAt ?? null,
+          metadata: metadata ?? undefined,
+          source: 'device',
+        });
+        const status = authManager.getStatusPayload();
+        return withStatus(status, ok ? 200 : 400);
+      }
+
+      if (!endpoint) {
+        await authManager.setError('Device authentication requires a PowerSync endpoint');
+        return withStatus({ status: 'error', reason: 'Device authentication requires a PowerSync endpoint' }, 400);
+      }
+
+      try {
+        await authManager.setReadyCredentials(
+          {
+            endpoint,
+            token,
+            expiresAt: expiresAt ?? undefined,
+            obtainedAt: obtainedAt ?? undefined,
+            metadata: metadata ?? undefined,
+          },
+          { source: 'device' },
+        );
+        return withStatus(authManager.getStatusPayload(), 200);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Device authentication failed';
+        await authManager.setError(message);
+        return withStatus({ status: 'error', reason: message }, 400);
+      }
+    }
+
+    const mode = coerceString(payload.mode);
+    await deviceCoordinator.begin({
+      endpoint: extractEndpoint(payload) ?? fallbackEndpoint(),
+      metadata: metadata ?? undefined,
+      mode,
+    });
+    return withStatus(authManager.getStatusPayload(), 202);
+  };
+
+  const handleAuthLogout = async (): Promise<AuthActionResponse> => {
+    await authManager.logout('logout requested');
+    return withStatus(authManager.getStatusPayload(), 200);
+  };
+
   const server = createDaemonServer({
     host: config.host,
     port: config.port,
@@ -135,6 +380,10 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       connectedAt: connectedAt.toISOString(),
       streamCount,
     }),
+    getAuthStatus: () => authManager.getStatusPayload(),
+    handleAuthGuest: handleGuestAuth,
+    handleAuthDevice: handleDeviceAuth,
+    handleAuthLogout: handleAuthLogout,
     onShutdownRequested: () => {
       requestShutdown('rpc');
     },
@@ -227,19 +476,11 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   await server.close().catch((error) => {
     console.warn('[powersync-daemon] failed to stop HTTP server', error);
   });
+  authUnsubscribe();
 
   if (typeof process.stdin?.pause === 'function') {
     process.stdin.pause();
   }
 
   console.info('[powersync-daemon] shutdown complete');
-}
-
-const executedDirectly = process.argv[1] === fileURLToPath(import.meta.url);
-
-if (executedDirectly) {
-  startDaemon().catch((error) => {
-    console.error('[powersync-daemon] fatal error', error);
-    process.exitCode = 1;
-  });
 }
