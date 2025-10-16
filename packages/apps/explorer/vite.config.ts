@@ -47,6 +47,22 @@ function loadStackEnv(path: string): Record<string, string> {
 
 const stackEnv = loadStackEnv(stackEnvPath)
 
+const PLACEHOLDER_PATTERNS: Array<(value: string) => boolean> = [
+  (value) => value.trim().length === 0,
+  (value) => value.trim().toLowerCase() === 'dev-token-placeholder',
+  (value) => value.trim().toLowerCase() === 'anon-placeholder',
+  (value) => value.trim().toLowerCase() === 'service-role-placeholder',
+  (value) => value.trim().toLowerCase() === 'powersync-remote-placeholder',
+  (value) => /^https?:\/\/localhost(?::\d+)?\/?$/.test(value.trim().toLowerCase()) && value.includes('8090'),
+]
+
+const isPlaceholder = (rawValue: string | undefined | null): boolean => {
+  if (typeof rawValue !== 'string') return true
+  const value = rawValue.trim()
+  if (!value) return true
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern(value))
+}
+
 function applyStackEnvFallbacks() {
   const defaults: Record<string, string> = {
     VITE_SUPABASE_URL: 'http://127.0.0.1:55431',
@@ -60,11 +76,15 @@ function applyStackEnvFallbacks() {
 
   for (const [target, fallbacks] of Object.entries(STACK_ENV_FALLBACKS)) {
     const current = process.env[target]
-    if (current && current.trim().length > 0) {
+    if (!isPlaceholder(current)) {
       continue
     }
-    const candidates = [process.env[target], stackEnv[target], ...fallbacks.map((key) => process.env[key] ?? stackEnv[key])]
-    const resolved = candidates.find((value) => typeof value === 'string' && value.trim().length > 0)
+    const candidates = [
+      process.env[target],
+      stackEnv[target],
+      ...fallbacks.map((key) => process.env[key] ?? stackEnv[key]),
+    ].filter((value): value is string => typeof value === 'string' && !isPlaceholder(value))
+    const resolved = candidates.find(Boolean)
     if (resolved) {
       process.env[target] = resolved.trim()
     } else if (defaults[target]) {

@@ -5,11 +5,30 @@ interface ConnectorOptions {
   endpoint?: string | null
 }
 
+const PLACEHOLDER_VALUES = new Set([
+  'dev-token-placeholder',
+  'anon-placeholder',
+  'service-role-placeholder',
+  'powersync-remote-placeholder',
+])
+
+const isPlaceholder = (value: string | undefined | null): boolean => {
+  if (!value) return true
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  if (PLACEHOLDER_VALUES.has(trimmed.toLowerCase())) return true
+  if (/^https?:\/\/localhost(?::\d+)?\/?$/.test(trimmed.toLowerCase()) && trimmed.includes('8090')) return true
+  return false
+}
+
 function resolveEnv(name: string): string | null {
   const env = import.meta.env as Record<string, string | undefined>
   const value = env[name]
   const trimmed = value?.trim()
-  return trimmed ? trimmed : null
+  if (!trimmed || isPlaceholder(trimmed)) {
+    return null
+  }
+  return trimmed
 }
 
 export class Connector implements PowerSyncBackendConnector {

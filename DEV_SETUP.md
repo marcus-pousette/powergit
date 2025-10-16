@@ -22,8 +22,8 @@ Open **Agents.md** for the architecture.
 ```bash
 pnpm install
 pnpm dev:stack:up
-pnpm --filter @pkg/cli login
-pnpm --filter @pkg/cli demo-seed
+pnpm --filter @pkg/cli cli login
+pnpm --filter @pkg/cli cli demo-seed
 pnpm dev
 ```
 
@@ -76,7 +76,7 @@ Detailed breakdown:
 6. **Seed a demo repository** (optional but recommended for a quick tour):
 
    ```bash
-   pnpm --filter @pkg/cli demo-seed
+   pnpm --filter @pkg/cli cli demo-seed
    ```
 
    By default this clones [`powersync-community/react-supabase-chat-e2ee`](https://github.com/powersync-community/react-supabase-chat-e2ee) into a temporary Git repo, commits the tree, and pushes it through the PowerSync remote helper so the daemon/Explorer have something interesting to show. Pass `--template-url <git-url>` to seed a different project or `--no-template` to fall back to the minimal sample used previously.
@@ -88,6 +88,8 @@ Detailed breakdown:
    ```
 
    The command auto-loads `.env.powersync-stack`, so the explorer connects to the local Supabase + PowerSync stack without extra setup. Vite serves `http://localhost:5783` and the home screen lists every org the daemon has replicated (including the demo seed above). Use `pnpm --filter @app/explorer dev:remote` if you need to point the explorer at a hosted Supabase project instead. Set `VITE_POWERSYNC_DISABLED=true` to work fully offline with cached data.
+
+   Sign in with the Supabase email/password exported by `pnpm dev:stack` (they are written to `.env.powersync-stack` as `POWERSYNC_SUPABASE_EMAIL` and `POWERSYNC_SUPABASE_PASSWORD`). The CLI hydrates the daemon with the same credentials (`~/.psgit/session.json` stores the cached JWT), so both the explorer and CLI share the exact Supabase user. If the header keeps reading “Offline · syncing…”, the daemon has not reported a ready status yet—rerun `pnpm --filter @pkg/cli cli login --guest` or check `http://127.0.0.1:5030/auth/status` to confirm it has a token.
 
 8. **Stop everything** with <kbd>Ctrl</kbd>+<kbd>C</kbd> in both terminals when you wrap up, then run `pnpm dev:stack stop` if you launched the services with `dev:stack:up`.
 

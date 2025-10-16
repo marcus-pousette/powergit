@@ -16,16 +16,54 @@ import {
 } from './daemon-client'
 import { getAccessToken } from './supabase'
 
+declare global {
+  interface Window {
+    __powersyncForceEnable?: boolean
+    __powersyncForceDisable?: boolean
+  }
+}
 
-const isPowerSyncDisabled = import.meta.env.VITE_POWERSYNC_DISABLED === 'true'
+function resolvePowerSyncDisabled(): boolean {
+  const envDisabled = import.meta.env.VITE_POWERSYNC_DISABLED === 'true'
+  const globalValue =
+    typeof globalThis === 'object' && globalThis
+      ? (globalThis as typeof globalThis & { __powersyncForceEnable?: unknown; __powersyncForceDisable?: unknown })
+      : null
+  if (globalValue) {
+    if (globalValue.__powersyncForceEnable === true) {
+      return false
+    }
+    if (globalValue.__powersyncForceDisable === true) {
+      return true
+    }
+  }
+  return envDisabled
+}
+
+const isPowerSyncDisabled = resolvePowerSyncDisabled()
 const isMultiTabCapable = typeof SharedWorker !== 'undefined'
+
+const PLACEHOLDER_VALUES = new Set([
+  'dev-token-placeholder',
+  'anon-placeholder',
+  'service-role-placeholder',
+  'powersync-remote-placeholder',
+])
+
+function isPlaceholder(value: string | undefined | null): boolean {
+  if (!value) return true
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  if (PLACEHOLDER_VALUES.has(trimmed.toLowerCase())) return true
+  if (/^https?:\/\/localhost(?::\d+)?\/?$/i.test(trimmed) && trimmed.includes('8090')) return true
+  return false
+}
 
 function readEnvString(name: string): string | null {
   const env = import.meta.env as Record<string, string | undefined>
   const value = env[name]
-  if (!value) return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
+  if (isPlaceholder(value)) return null
+  return value!.trim()
 }
 
 export interface DaemonAuthSnapshot {

@@ -7,7 +7,22 @@ const SETTER_KEY = '__powersyncSetRepoFixture'
 const CLEAR_KEY = '__powersyncClearRepoFixtures'
 const GETTER_KEY = '__powersyncGetRepoFixtures'
 
-const fixtureBridgeEnabled = import.meta.env.DEV && import.meta.env.VITE_POWERSYNC_USE_FIXTURES !== 'false'
+declare global {
+  interface Window {
+    __powersyncUseFixturesOverride?: boolean
+  }
+}
+
+function isFixtureBridgeEnabled(): boolean {
+  if (!import.meta.env.DEV) return false
+  const globalOverride =
+    typeof globalThis === 'object' && globalThis
+      ? (globalThis as typeof globalThis & { __powersyncUseFixturesOverride?: unknown }).__powersyncUseFixturesOverride
+      : undefined
+  if (globalOverride === true) return true
+  if (globalOverride === false) return false
+  return import.meta.env.VITE_POWERSYNC_USE_FIXTURES !== 'false'
+}
 
 export type RepoFixture = RepoFixturePayload & {
   branches: NonNullable<RepoFixturePayload['branches']>
@@ -62,7 +77,7 @@ function dispatchUpdate(key: string) {
 }
 
 export function initTestFixtureBridge() {
-  if (!fixtureBridgeEnabled || typeof window === 'undefined') return
+  if (!isFixtureBridgeEnabled() || typeof window === 'undefined') return
   const global = getGlobal()
   if (global[SETTER_KEY] && global[CLEAR_KEY]) {
     console.debug('[TestFixtureBridge] already initialized')
@@ -90,7 +105,7 @@ export function initTestFixtureBridge() {
 export function useRepoFixture(orgId: string, repoId: string): RepoFixture | null {
   const subscribe = React.useCallback(
     (onStoreChange: () => void) => {
-      if (!fixtureBridgeEnabled || typeof window === 'undefined') {
+      if (!isFixtureBridgeEnabled() || typeof window === 'undefined') {
         return () => {}
       }
 
@@ -115,7 +130,7 @@ export function useRepoFixture(orgId: string, repoId: string): RepoFixture | nul
   )
 
   const getSnapshot = React.useCallback(() => {
-  if (!fixtureBridgeEnabled || typeof window === 'undefined') return null
+    if (!isFixtureBridgeEnabled() || typeof window === 'undefined') return null
     const store = getGlobal()[STORE_KEY]
     if (!store) return null
     return store[makeRepoKey(orgId, repoId)] ?? null
@@ -127,7 +142,7 @@ export function useRepoFixture(orgId: string, repoId: string): RepoFixture | nul
 }
 
 export function getRepoFixture(orgId: string, repoId: string): RepoFixture | null {
-  if (!fixtureBridgeEnabled || typeof window === 'undefined') return null
+  if (!isFixtureBridgeEnabled() || typeof window === 'undefined') return null
   const store = getGlobal()[STORE_KEY]
   if (!store) return null
   return store[makeRepoKey(orgId, repoId)] ?? null

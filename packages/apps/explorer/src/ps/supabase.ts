@@ -17,6 +17,22 @@ const FALLBACK_DEFAULTS: Record<string, string> = {
   POWERSYNC_DAEMON_DEVICE_URL: 'http://localhost:5783/auth',
 }
 
+const PLACEHOLDER_VALUES = new Set([
+  'dev-token-placeholder',
+  'anon-placeholder',
+  'service-role-placeholder',
+  'powersync-remote-placeholder',
+])
+
+function isPlaceholder(value: string | undefined | null): boolean {
+  if (!value) return true
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  if (PLACEHOLDER_VALUES.has(trimmed.toLowerCase())) return true
+  if (/^https?:\/\/localhost(?::\d+)?\/?$/.test(trimmed.toLowerCase()) && trimmed.includes('8090')) return true
+  return false
+}
+
 function readEnv(name: string): string | null {
   const env = import.meta.env as Record<string, string | undefined>
   const runtimeEnv = ((globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process?.env) ?? {}
@@ -31,7 +47,7 @@ function readEnv(name: string): string | null {
   for (const candidate of candidates) {
     if (typeof candidate !== 'string') continue
     const trimmed = candidate.trim()
-    if (trimmed.length > 0) {
+    if (trimmed.length > 0 && !isPlaceholder(trimmed)) {
       return trimmed
     }
   }

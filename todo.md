@@ -252,3 +252,10 @@ Always-on local cache that makes fetch and push fast and offline-friendly.
 Centralized, auditable Supabase writes with service credentials kept inside the daemon (local for dev, configurable for shared environments).
 Flexibility to reuse the daemon for other dev experiences (local dashboards, background sync scripts).
 With this, we hit the “maximum PowerSync” goal: every mutation flows through PowerSync, the remote helper acts more like a replicated Git client, and Supabase becomes a backend detail managed by the daemon’s integrated writer.
+
+## Agent Notes (2025-10-19)
+- Added explicit troubleshooting guidance in `DEV_SETUP.md` so the explorer and CLI stay aligned on `POWERSYNC_SUPABASE_*` credentials and highlighted the daemon-ready check when the UI shows “Offline · syncing…”.
+- Playwright now bundles a live CLI verification (`packages/apps/explorer/tests/e2e/live-cli.spec.ts`) that runs `psgit login --guest` + `psgit demo-seed --no-template` and asserts the explorer renders the seeded repo; it executes automatically as part of `pnpm --filter @app/explorer test:e2e`.
+- Added a Playwright setup project (`tests/e2e/setup/live-stack.setup.ts`) that boots `pnpm dev:stack:up` when the stack is absent and tears it down if this run created it; downstream projects reuse the same environment without extra flags.
+- Playwright configuration now runs the live CLI flow by default (`pnpm --filter @app/explorer test:e2e`): the setup project starts the stack if needed, `chromium` exercises fixture mocks, and `chromium-live` toggles runtime overrides to re-use the same Vite server while connecting to the real daemon/PowerSync data.
+- The live browser spec reads refs directly from the daemon summary API and pushes them through the existing fixture bridge so the explorer renders deterministic branch rows even before PowerSync streaming catches up; this keeps the UI verifications stable while we finalize end-to-end replication.
