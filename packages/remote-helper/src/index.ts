@@ -204,6 +204,7 @@ async function ensureClient(): Promise<PowerSyncRemoteClient | null> {
       fetchImpl: globalThis.fetch as typeof fetch,
     })
   }
+  await ensureDaemonSubscribed()
   return daemonClient
 }
 
@@ -214,6 +215,28 @@ function normalizeBaseUrl(url: string): string {
 function ensureRemote(): { org: string; repo: string; endpoint: string; basePath?: string } | null {
   if (!parsed) return null
   return { org: parsed.org, repo: parsed.repo, endpoint: parsed.endpoint, basePath: parsed.basePath }
+}
+
+async function ensureDaemonSubscribed(): Promise<void> {
+  if (!parsed || typeof globalThis.fetch !== 'function') return
+  const streams = [
+    `orgs/${parsed.org}/repos/${parsed.repo}/refs`,
+    `orgs/${parsed.org}/repos/${parsed.repo}/commits`,
+    `orgs/${parsed.org}/repos/${parsed.repo}/file_changes`,
+    `orgs/${parsed.org}/repos/${parsed.repo}/objects`,
+  ]
+  try {
+    const res = await fetch(`${daemonBaseUrl}/streams`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streams }),
+    })
+    if (!res.ok && res.status !== 503) {
+      console.warn(`[powersync] daemon stream subscription returned ${res.status} ${res.statusText}`)
+    }
+  } catch (error) {
+    console.warn('[powersync] failed to subscribe daemon streams', error instanceof Error ? error.message : error)
+  }
 }
 
 let daemonStartInFlight = false

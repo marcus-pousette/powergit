@@ -64,6 +64,9 @@ Create a development experience where every component—CLI, explorer, backgroun
 ## Agent Notes (2025-10-20)
 - Daemon RPC server now returns CORS headers (including OPTIONS preflight) so the explorer can poll `/auth/status` and complete device logins from `http://localhost:5783` without browser errors (`packages/daemon/src/server.ts`, `packages/daemon/src/__tests__/server-auth.test.ts`).
 - Explorer keeps `/auth` visible when `device_code` is present and shows a “daemon login in progress” helper for already authenticated sessions, avoiding redundant redirects during CLI device flows (`packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
+- Raw Git tables now carry PowerSync-managed triggers that forward local mutations into `powersync_crud`, and the daemon drains those CRUD batches straight into Supabase right after each push (keeping the upload handler path ready for future integration) (`packages/daemon/src/local-schema.ts`, `packages/daemon/src/index.ts`, `packages/daemon/src/supabase-writer.ts`).
+- Follow-up: once PowerSync’s `uploadHandler` fires for raw-table triggers automatically, drop the explicit `supabaseWriter.uploadPending()` call and rely on the handler (or move the logic there). Keep an eye on upstream SDK updates before refactoring.
+- Playwright live UI spec (`tests/e2e/live-cli.spec.ts`) still relies on the fixture bridge/mocked Supabase client even though the daemon mirrors data in real time. Future improvement: run that scenario against the real Supabase API (log in with seeded user/service key, wait for daemon sync) so the browser exercise matches production wiring.
 
 ## Agent Notes (2025-10-21)
 - Removed the passphrase gate from the explorer; sign-in now lands directly on the overview without additional setup screens (`packages/apps/explorer/src/main.tsx`, `packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
@@ -259,3 +262,9 @@ With this, we hit the “maximum PowerSync” goal: every mutation flows through
 - Added a Playwright setup project (`tests/e2e/setup/live-stack.setup.ts`) that boots `pnpm dev:stack:up` when the stack is absent and tears it down if this run created it; downstream projects reuse the same environment without extra flags.
 - Playwright configuration now runs the live CLI flow by default (`pnpm --filter @app/explorer test:e2e`): the setup project starts the stack if needed, `chromium` exercises fixture mocks, and `chromium-live` toggles runtime overrides to re-use the same Vite server while connecting to the real daemon/PowerSync data.
 - The live browser spec reads refs directly from the daemon summary API and pushes them through the existing fixture bridge so the explorer renders deterministic branch rows even before PowerSync streaming catches up; this keeps the UI verifications stable while we finalize end-to-end replication.
+
+## Agent Notes (2025-10-20)
+- Hooked both the CLI `sync` command and the git remote-helper bootstrap into the daemon `/streams` endpoint so org/repo subscriptions happen automatically during normal workflows (no more manual `POWERSYNC_DAEMON_STREAMS`).
+- Added daemon-side stream subscription manager with `/streams` list/subscribe/unsubscribe routes plus unit coverage to lock the contract.
+- Refreshed CLI e2e to delete existing subscriptions, run `psgit sync`, and assert the daemon re-subscribes before verifying that a second working copy observes new refs via streaming.
+- Remote helper git e2e now checks the daemon’s stream inventory after a push; Supabase propagation can still be slow locally (~60s). Vitest run spins up the stack correctly but timed out waiting for Supabase to surface the updated ref—rerun once supabase latency is understood or bump wait budget.

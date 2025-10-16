@@ -11,6 +11,19 @@ import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
 import { getServerSupabaseClient, parsePowerSyncUrl } from '@shared/core'
 
 const execFileAsync = promisify(execFile)
+const MAX_WAIT_MS = Number.parseInt(process.env.POWERSYNC_TEST_MAX_WAIT_MS ?? '60000', 10)
+const POLL_INTERVAL_MS = 1000
+
+async function waitFor<T>(fn: () => Promise<T | null | false>, timeoutMs = MAX_WAIT_MS): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  let lastValue: T | null | false = null
+  while (Date.now() < deadline) {
+    lastValue = await fn()
+    if (lastValue) return lastValue
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+  }
+  throw new Error(`Timed out waiting for condition (last value: ${JSON.stringify(lastValue)})`)
+}
 
 const requireForTests = createRequire(import.meta.url)
 
@@ -176,9 +189,34 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
   it('pushes commits and fetches them into a fresh repo', async () => {
     const commitSha = (await runGit(['rev-parse', 'HEAD'], repoDir, env)).stdout.trim()
 
+    const streamIds = [
+      `orgs/${org}/repos/${repo}/refs`,
+      `orgs/${org}/repos/${repo}/commits`,
+      `orgs/${org}/repos/${repo}/file_changes`,
+      `orgs/${org}/repos/${repo}/objects`,
+    ]
+
+    const listStreams = async () => {
+      const res = await fetch(`${powersyncEndpoint}/streams`).catch(() => null)
+      if (!res || !res.ok) return []
+      const payload = (await res.json().catch(() => null)) as { streams?: unknown } | null
+      if (!payload || !Array.isArray(payload.streams)) return []
+      return payload.streams.filter((value): value is string => typeof value === 'string' && value.length > 0)
+    }
+
+    const initialStreams = await listStreams()
+    for (const streamId of streamIds) {
+      expect(initialStreams).not.toContain(streamId)
+    }
+
     console.error('[test] before push')
     await runGit(['push', 'powersync', 'HEAD:refs/heads/main'], repoDir, env)
     console.error('[test] after push')
+
+    await waitFor(async () => {
+      const current = await listStreams()
+      return streamIds.every((streamId) => current.includes(streamId)) ? current : null
+    })
 
     cloneDir = await mkdtemp(join(tmpdir(), 'powersync-clone-'))
     await runGit(['init'], cloneDir, env)
@@ -198,14 +236,26 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
 
     const supabase = getServerSupabaseClient()
     expect(supabase).toBeTruthy()
-    const { data: refRow, error: refError } = await supabase!
+    await waitFor(async () => {
+      const { data, error } = await supabase!
+        .from('refs')
+        .select('target_sha')
+        .eq('org_id', org)
+        .eq('repo_id', repo)
+        .eq('name', 'refs/heads/main')
+        .maybeSingle()
+      if (error) return null
+      if (!data || !data.target_sha) return null
+      return data.target_sha === commitSha ? data : null
+    })
+    const finalRow = await supabase!
       .from('refs')
       .select('target_sha')
       .eq('org_id', org)
       .eq('repo_id', repo)
       .eq('name', 'refs/heads/main')
       .single()
-    expect(refError).toBeNull()
-    expect(refRow?.target_sha).toBe(commitSha)
-  }, 60_000)
+    expect(finalRow.error).toBeNull()
+    expect(finalRow.data?.target_sha).toBe(commitSha)
+  }, 120_000)
 })

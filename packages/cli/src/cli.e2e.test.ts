@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { parsePowerSyncUrl } from '@shared/core'
+import { parsePowerSyncUrl, PowerSyncRemoteClient } from '@shared/core'
 import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
 import { seedDemoRepository } from './index.js'
 import { loadStoredCredentials } from './auth/session.js'
@@ -90,6 +90,8 @@ if (initialMissingEnv.length > 0 && !canRunLiveTests) {
 }
 
 const describeLive = canRunLiveTests ? describe : describe.skip
+
+const PROPAGATION_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_PROPAGATION_TIMEOUT_MS ?? '60000', 10)
 
 type LiveStackConfig = {
   remoteUrl: string
@@ -206,19 +208,26 @@ describe('psgit CLI e2e', () => {
     expect(stdout).toContain('psgit commands:')
     expect(stdout).toContain('psgit remote add powersync')
 
-    const { stdout: unknownStdout } = await runCli(['status'])
-    expect(unknownStdout).toContain('psgit commands:')
+    let execError: (NodeJS.ErrnoException & { stderr?: string }) | null = null
+    try {
+      await runCli(['status'])
+    } catch (error) {
+      execError = error as NodeJS.ErrnoException & { stderr?: string }
+    }
+    expect(execError).not.toBeNull()
+    expect(execError?.stderr ?? execError?.message ?? '').toContain('Unknown argument: status')
   })
 
   it('exits with usage instructions when url is missing', async () => {
+    let execError: (NodeJS.ErrnoException & { stderr?: string }) | null = null
     try {
       await runCli(['remote', 'add', 'powersync'])
-      throw new Error('expected CLI command to fail without URL')
     } catch (error) {
-      const execError = error as NodeJS.ErrnoException & { stderr?: string }
-      expect(execError.code).toBe(2)
-      expect(execError.stderr ?? '').toContain('Usage: psgit remote add powersync')
+      execError = error as NodeJS.ErrnoException & { stderr?: string }
     }
+    expect(execError).not.toBeNull()
+    expect(execError?.code).toBe(2)
+    expect(execError?.stderr ?? execError?.message ?? '').toContain('Not enough non-option arguments')
   })
 })
 
@@ -345,6 +354,61 @@ describeLive('psgit sync against live PowerSync stack', () => {
     )
   }
 
+  function runCliInDir(targetDir: string, args: string[], env: NodeJS.ProcessEnv = {}) {
+    return execFileAsync(
+      'node',
+      buildCliArgs(args),
+      {
+        cwd: targetDir,
+        env: {
+          ...process.env,
+          POWERSYNC_SUPABASE_URL: liveStackConfig.supabaseUrl,
+          POWERSYNC_SUPABASE_EMAIL: liveStackConfig.supabaseEmail,
+          POWERSYNC_SUPABASE_PASSWORD: liveStackConfig.supabasePassword,
+          POWERSYNC_ENDPOINT: liveStackConfig.endpoint,
+          ...env,
+        },
+      },
+    )
+  }
+
+  function parseSyncCounts(output: string) {
+    const match = /Rows: (\d+) refs, (\d+) commits, (\d+) file changes/.exec(output)
+    if (!match) {
+      throw new Error(`Unable to parse sync output: ${output}`)
+    }
+    return {
+      refs: Number.parseInt(match[1]!, 10),
+      commits: Number.parseInt(match[2]!, 10),
+      fileChanges: Number.parseInt(match[3]!, 10),
+    }
+  }
+
+  async function waitForCounts(fn: () => Promise<{ refs: number; commits: number; fileChanges: number }>, predicate: (counts: { refs: number; commits: number; fileChanges: number }) => boolean, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs
+    let lastCounts: { refs: number; commits: number; fileChanges: number } | null = null
+    while (Date.now() < deadline) {
+      lastCounts = await fn()
+      if (predicate(lastCounts)) {
+        return lastCounts
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+    throw new Error(`Timed out waiting for PowerSync counts to satisfy predicate (last counts: ${JSON.stringify(lastCounts)})`)
+  }
+
+  async function listDaemonStreams(baseUrl: string) {
+    const response = await fetch(`${baseUrl}/streams`).catch(() => null)
+    if (!response || !response.ok) {
+      throw new Error(`Failed to list daemon streams (status: ${response?.status ?? 'unavailable'})`)
+    }
+    const payload = (await response.json().catch(() => null)) as { streams?: unknown } | null
+    if (!payload || !Array.isArray(payload.streams)) {
+      return []
+    }
+    return payload.streams.filter((value): value is string => typeof value === 'string' && value.length > 0)
+  }
+
   it('hydrates refs, commits, and file changes into SQLite', async () => {
     if (skipLiveSuite) {
       return
@@ -370,4 +434,87 @@ describeLive('psgit sync against live PowerSync stack', () => {
       expect(fileChanges).toBeGreaterThan(0)
     }
   }, 60_000)
+
+  it('streams new refs between separate working directories', async () => {
+    if (skipLiveSuite) {
+      return
+    }
+
+    const repoDirA = await mkdtemp(join(tmpdir(), 'psgit-stream-a-'))
+    const repoDirB = await mkdtemp(join(tmpdir(), 'psgit-stream-b-'))
+
+    const remoteUrl = liveStackConfig.remoteUrl
+    const remoteName = liveStackConfig.remoteName
+    const daemonBaseUrl = process.env.POWERSYNC_DAEMON_URL ?? 'http://127.0.0.1:5030'
+    const branchName = `cli-stream-${Date.now().toString(36)}`
+    const { org, repo } = parsePowerSyncUrl(remoteUrl)
+    const streamIds = [
+      `orgs/${org}/repos/${repo}/refs`,
+      `orgs/${org}/repos/${repo}/commits`,
+      `orgs/${org}/repos/${repo}/file_changes`,
+      `orgs/${org}/repos/${repo}/objects`,
+    ]
+
+    const setupWorkingCopy = async (dir: string) => {
+      await runGit(['init'], dir)
+      await runGit(['config', 'user.email', 'cli-e2e@example.com'], dir)
+      await runGit(['config', 'user.name', 'CLI E2E'], dir)
+      await runCliInDir(dir, ['remote', 'add', 'powersync', remoteUrl], { REMOTE_NAME: remoteName })
+    }
+
+    try {
+      await setupWorkingCopy(repoDirA)
+      await setupWorkingCopy(repoDirB)
+
+      const deleteRes = await fetch(`${daemonBaseUrl}/streams`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streams: streamIds }),
+      })
+      expect(deleteRes.status).toBeLessThan(500)
+
+      const afterDeleteStreams = await listDaemonStreams(daemonBaseUrl)
+      for (const streamId of streamIds) {
+        expect(afterDeleteStreams).not.toContain(streamId)
+      }
+
+      const initialSync = await runCliInDir(repoDirB, ['sync', '--remote', remoteName])
+      const initialCounts = parseSyncCounts(`${initialSync.stdout ?? ''}${initialSync.stderr ?? ''}`)
+
+      const streamsAfterSync = await listDaemonStreams(daemonBaseUrl)
+      for (const streamId of streamIds) {
+        expect(streamsAfterSync).toContain(streamId)
+      }
+
+      await seedDemoRepository({
+        remoteUrl,
+        remoteName,
+        branch: branchName,
+        skipSync: true,
+        keepWorkingDir: false,
+      })
+
+      const updatedCounts = await waitForCounts(
+        async () => {
+          const { stdout, stderr } = await runCliInDir(repoDirB, ['sync', '--remote', remoteName])
+          return parseSyncCounts(`${stdout ?? ''}${stderr ?? ''}`)
+        },
+        (counts) => counts.refs > initialCounts.refs || counts.commits > initialCounts.commits,
+        PROPAGATION_TIMEOUT_MS,
+      )
+
+      expect(updatedCounts.refs).toBeGreaterThan(initialCounts.refs)
+
+      const client = new PowerSyncRemoteClient({
+        endpoint: daemonBaseUrl,
+        fetchImpl: global.fetch as typeof fetch,
+        pathRouting: 'segments',
+      })
+      const refs = await client.listRefs(org, repo)
+      expect(refs.refs.some((ref) => ref.name === `refs/heads/${branchName}`)).toBe(true)
+    } finally {
+      await rm(repoDirA, { recursive: true, force: true }).catch(() => undefined)
+      await rm(repoDirB, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 120_000)
 })

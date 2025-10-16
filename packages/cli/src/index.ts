@@ -12,6 +12,31 @@ const DEFAULT_SEED_BRANCH = 'main'
 const DEFAULT_SEED_AUTHOR = { name: 'PowerSync Seed Bot', email: 'seed@powersync.test' }
 const DEFAULT_TEMPLATE_REPO = 'https://github.com/powersync-community/react-supabase-chat-e2ee.git'
 
+function buildStreamIds(org: string, repo: string): string[] {
+  return STREAM_SUFFIXES.map((suffix) => `orgs/${org}/repos/${repo}/${suffix}`)
+}
+
+async function subscribeRepoStreams(baseUrl: string, streams: string[]): Promise<void> {
+  if (typeof globalThis.fetch !== 'function') {
+    console.warn('[psgit] fetch API unavailable; cannot request daemon stream subscription')
+    return
+  }
+  if (streams.length === 0) return
+  const target = `${normalizeBaseUrl(baseUrl)}/streams`
+  try {
+    const res = await fetch(target, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streams }),
+    })
+    if (!res.ok && res.status !== 503) {
+      console.warn(`[psgit] daemon stream subscription returned ${res.status} ${res.statusText}`)
+    }
+  } catch (error) {
+    console.warn('[psgit] failed to subscribe daemon streams', error instanceof Error ? error.message : error)
+  }
+}
+
 export const DEFAULT_DAEMON_URL =
   process.env.POWERSYNC_DAEMON_URL ??
   process.env.POWERSYNC_DAEMON_ENDPOINT ??
@@ -205,6 +230,8 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
       `[psgit] PowerSync daemon is not authenticated${reason}. Run \`psgit login\` to authorise the daemon.`,
     )
   }
+
+  await subscribeRepoStreams(daemonBaseUrl, buildStreamIds(org, repo))
 
   const client = new PowerSyncRemoteClient({
     endpoint: daemonBaseUrl,

@@ -36,6 +36,9 @@ export interface DaemonServerOptions {
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
   pushPack?: (params: { orgId: string; repoId: string; payload: DaemonPushRequest }) => Promise<DaemonPushResponse>;
   getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
+  listStreams?: () => string[];
+  subscribeStreams?: (streamIds: string[]) => Promise<{ added: string[]; alreadyActive: string[]; queued?: string[] }>;
+  unsubscribeStreams?: (streamIds: string[]) => Promise<{ removed: string[]; notFound: string[] }>;
   cors?: DaemonCorsOptions;
 }
 
@@ -69,6 +72,18 @@ async function readJsonBody<T = unknown>(req: http.IncomingMessage): Promise<T |
     console.warn('[powersync-daemon] failed to parse JSON body', error);
     return null;
   }
+}
+
+function parseStreamList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const unique = new Set<string>();
+  for (const candidate of input) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    unique.add(trimmed);
+  }
+  return Array.from(unique);
 }
 
 function resolveAuthStatusCode(payload: DaemonAuthResponse, fallback = 200): number {
@@ -307,6 +322,84 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
         })
         .catch((error) => {
           console.error('[powersync-daemon] failed to process auth device login', error);
+          res.statusCode = 500;
+          res.end();
+        });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/streams') {
+      if (!options.listStreams) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      try {
+        sendJson(res, 200, { streams: options.listStreams() });
+      } catch (error) {
+        console.error('[powersync-daemon] failed to list streams', error);
+        res.statusCode = 500;
+        res.end();
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/streams') {
+      if (!options.subscribeStreams) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      Promise.resolve()
+        .then(async () => {
+          const body = await readJsonBody<{ streams?: unknown }>(req);
+          const streams = parseStreamList(body?.streams);
+          if (streams.length === 0) {
+            res.statusCode = 400;
+            res.end();
+            return null;
+          }
+          return options.subscribeStreams?.(streams).then((result) => ({
+            added: result?.added ?? [],
+            alreadyActive: result?.alreadyActive ?? [],
+            queued: result?.queued ?? [],
+          }));
+        })
+        .then((payload) => {
+          if (!payload) return;
+          sendJson(res, 200, payload);
+        })
+        .catch((error) => {
+          console.error('[powersync-daemon] failed to subscribe streams', error);
+          res.statusCode = 500;
+          res.end();
+        });
+      return;
+    }
+
+    if (req.method === 'DELETE' && url.pathname === '/streams') {
+      if (!options.unsubscribeStreams) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      Promise.resolve()
+        .then(async () => {
+          const body = await readJsonBody<{ streams?: unknown }>(req);
+          const streams = parseStreamList(body?.streams);
+          if (streams.length === 0) {
+            res.statusCode = 400;
+            res.end();
+            return null;
+          }
+          return options.unsubscribeStreams?.(streams);
+        })
+        .then((payload) => {
+          if (!payload) return;
+          sendJson(res, 200, payload);
+        })
+        .catch((error) => {
+          console.error('[powersync-daemon] failed to unsubscribe streams', error);
           res.statusCode = 500;
           res.end();
         });

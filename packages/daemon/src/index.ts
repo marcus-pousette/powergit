@@ -51,36 +51,111 @@ function buildPushErrorResults(updates: PushUpdateRow[], message: string) {
   );
 }
 
-async function subscribeToInitialStreams(
-  streamIds: readonly string[],
-  database: PowerSyncDatabase,
-): Promise<SyncStreamSubscription[]> {
-  if (streamIds.length === 0) return [];
+class StreamSubscriptionManager {
+  private readonly desired = new Set<string>();
+  private readonly active = new Map<string, SyncStreamSubscription>();
 
-  const subscriptions: SyncStreamSubscription[] = [];
-  for (const streamId of streamIds) {
-    try {
-      const stream = database.syncStream(streamId);
-      const subscription = await stream.subscribe();
-      subscriptions.push(subscription);
-      console.info(`[powersync-daemon] subscribed stream ${streamId}`);
-    } catch (error) {
-      console.error(`[powersync-daemon] failed to subscribe stream ${streamId}`, error);
+  constructor(private readonly database: PowerSyncDatabase) {}
+
+  trackDesired(streamIds: readonly string[]): string[] {
+    const added: string[] = [];
+    for (const rawId of streamIds) {
+      const streamId = rawId.trim();
+      if (!streamId) continue;
+      if (!this.desired.has(streamId)) {
+        this.desired.add(streamId);
+        added.push(streamId);
+      }
     }
+    return added;
   }
-  return subscriptions;
-}
 
-async function closeSubscriptions(subscriptions: SyncStreamSubscription[]): Promise<void> {
-  await Promise.all(
-    subscriptions.map(async (subscription) => {
+  listDesired(): string[] {
+    return Array.from(this.desired);
+  }
+
+  getActiveCount(): number {
+    return this.active.size;
+  }
+
+  async add(streamIds: readonly string[]): Promise<{ added: string[]; alreadyActive: string[] }> {
+    const added: string[] = [];
+    const alreadyActive: string[] = [];
+
+    for (const rawId of streamIds) {
+      const streamId = rawId.trim();
+      if (!streamId) continue;
+
+      this.desired.add(streamId);
+
+      if (this.active.has(streamId)) {
+        alreadyActive.push(streamId);
+        continue;
+      }
+
+      try {
+        const stream = this.database.syncStream(streamId);
+        const subscription = await stream.subscribe();
+        this.active.set(streamId, subscription);
+        console.info(`[powersync-daemon] subscribed stream ${streamId}`);
+        added.push(streamId);
+      } catch (error) {
+        console.error(`[powersync-daemon] failed to subscribe stream ${streamId}`, error);
+        alreadyActive.push(streamId);
+      }
+    }
+
+    return { added, alreadyActive };
+  }
+
+  async remove(streamIds: readonly string[]): Promise<{ removed: string[]; notFound: string[] }> {
+    const removed: string[] = [];
+    const notFound: string[] = [];
+
+    for (const rawId of streamIds) {
+      const streamId = rawId.trim();
+      if (!streamId) continue;
+
+      this.desired.delete(streamId);
+      const subscription = this.active.get(streamId);
+      if (!subscription) {
+        notFound.push(streamId);
+        continue;
+      }
       try {
         subscription.unsubscribe();
       } catch (error) {
         console.warn('[powersync-daemon] failed to unsubscribe stream', error);
+      } finally {
+        this.active.delete(streamId);
       }
-    }),
-  );
+      removed.push(streamId);
+    }
+
+    return { removed, notFound };
+  }
+
+  async resubscribeAll(): Promise<void> {
+    await this.closeAll();
+    const desired = Array.from(this.desired);
+    if (desired.length === 0) return;
+    await this.add(desired);
+  }
+
+  async closeAll(): Promise<void> {
+    const subscriptions = Array.from(this.active.values());
+    this.active.clear();
+    await Promise.all(
+      subscriptions.map(async (subscription) => {
+        try {
+          subscription.unsubscribe();
+        } catch (error) {
+          console.warn('[powersync-daemon] failed to unsubscribe stream', error);
+        }
+      }),
+    );
+  }
+
 }
 
 export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Promise<void> {
@@ -114,9 +189,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
 
   let running = true;
   let connectionReady = false;
-  let streamCount = 0;
   let connectedAt: Date | null = null;
-  let subscriptions: SyncStreamSubscription[] = [];
   const abortController = new AbortController();
   const requestShutdown = (reason: string) => {
     if (abortController.signal.aborted) return;
@@ -145,6 +218,20 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   });
 
   const database = await createPowerSyncDatabase({ dbPath: config.dbPath });
+  const streamManager = new StreamSubscriptionManager(database);
+  const initialQueued = streamManager.trackDesired(config.initialStreams);
+  if (initialQueued.length > 0) {
+    console.info(
+      `[powersync-daemon] queued initial streams from config: ${initialQueued.map((s) => `"${s}"`).join(', ')}`,
+    );
+  }
+
+  const supabaseWriter = config.supabase
+    ? new SupabaseWriter({
+        database,
+        config: config.supabase,
+      })
+    : null;
 
   const connector = new DaemonPowerSyncConnector({
     credentialsProvider: async () => {
@@ -154,16 +241,14 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       }
       return { endpoint: credentials.endpoint, token: credentials.token };
     },
+    uploadHandler: supabaseWriter
+      ? async (db) => {
+          await supabaseWriter.uploadPending(db);
+        }
+      : undefined,
   });
 
   await ensureLocalSchema(database);
-
-  const supabaseWriter = config.supabase
-    ? new SupabaseWriter({
-        database,
-        config: config.supabase,
-      })
-    : null;
 
   type AuthActionResponse = AuthStatusPayload & { httpStatus?: number };
 
@@ -359,19 +444,48 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     return withStatus(authManager.getStatusPayload(), 200);
   };
 
+  const normalizeStreamIds = (ids: readonly string[]): string[] =>
+    Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+
+  const subscribeStreams = async (streamIds: string[]) => {
+    const normalized = normalizeStreamIds(streamIds);
+    if (normalized.length === 0) {
+      return { added: [], alreadyActive: [], queued: [] };
+    }
+    if (!connectionReady) {
+      const queued = streamManager.trackDesired(normalized);
+      return { added: [], alreadyActive: [], queued };
+    }
+    const result = await streamManager.add(normalized);
+    return { ...result, queued: [] };
+  };
+
+  const unsubscribeStreams = async (streamIds: string[]) => {
+    const normalized = normalizeStreamIds(streamIds);
+    if (normalized.length === 0) {
+      return { removed: [], notFound: [] };
+    }
+    return streamManager.remove(normalized);
+  };
+
+  const listStreams = () => streamManager.listDesired();
+
   const server = createDaemonServer({
     host: config.host,
     port: config.port,
     getStatus: () => ({
       startedAt: startedAt.toISOString(),
       connected: connectionReady,
-      connectedAt: connectedAt ? connectedAt.toISOString() : null,
-      streamCount,
+      connectedAt: connectedAt ? connectedAt.toISOString() : undefined,
+      streamCount: streamManager.getActiveCount(),
     }),
     getAuthStatus: () => authManager.getStatusPayload(),
     handleAuthGuest: handleGuestAuth,
     handleAuthDevice: handleDeviceAuth,
     handleAuthLogout: handleAuthLogout,
+    listStreams,
+    subscribeStreams,
+    unsubscribeStreams,
     onShutdownRequested: () => {
       requestShutdown('rpc');
     },
@@ -417,6 +531,9 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
           summary: payload.summary ?? undefined,
           dryRun: payload.dryRun === true,
         });
+        if (supabaseWriter) {
+          await supabaseWriter.uploadPending();
+        }
         if (result.packSize !== undefined) {
           console.info(
             `[powersync-daemon] stored pack for ${orgId}/${repoId} (oid: ${result.packOid ?? 'unknown'}, size: ${result.packSize} bytes)`,
@@ -448,16 +565,12 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       connectionReady = true;
       connectedAt = new Date();
       console.info('[powersync-daemon] connected to PowerSync backend');
-      if (subscriptions.length > 0) {
-        await closeSubscriptions(subscriptions).catch((error) => {
-          console.warn('[powersync-daemon] failed to resubscribe previous streams', error);
-        });
-      }
-      subscriptions = await subscribeToInitialStreams(config.initialStreams, database);
-      streamCount = subscriptions.length;
+      await streamManager.resubscribeAll();
+      console.info(
+        `[powersync-daemon] active stream subscriptions: ${streamManager.getActiveCount()} (desired: ${streamManager.listDesired().length})`,
+      );
       if (supabaseWriter) {
-        console.info('[powersync-daemon] enabling Supabase writer');
-        supabaseWriter.start();
+        console.info('[powersync-daemon] Supabase upload handler ready');
       }
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -485,16 +598,9 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     abortController.signal.addEventListener('abort', () => resolve(), { once: true });
   });
 
-  await closeSubscriptions(subscriptions);
-  subscriptions = [];
-  streamCount = 0;
+  await streamManager.closeAll();
   connectionReady = false;
   connectedAt = null;
-  if (supabaseWriter) {
-    await supabaseWriter.stop().catch((error) => {
-      console.warn('[powersync-daemon] failed to stop Supabase writer', error);
-    });
-  }
   await database.close({ disconnect: true }).catch((error) => {
     console.warn('[powersync-daemon] failed to close database', error);
   });

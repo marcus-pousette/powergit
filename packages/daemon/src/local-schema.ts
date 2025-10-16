@@ -8,5 +8,204 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
         await tx.execute(statement);
       }
     }
+
+    // Raw tables require triggers to forward local writes into powersync_crud so that
+    // PowerSync can upload mutations to the backend. We recreate the triggers on each
+    // bootstrap to ensure schema drift is handled.
+    const triggerSpecs: Array<{ drop: string; create: string }> = [
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_insert',
+        create: `CREATE TRIGGER ps_raw_refs_insert
+          AFTER INSERT ON raw_refs
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'refs', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'name', NEW.name,
+              'target_sha', NEW.target_sha,
+              'updated_at', NEW.updated_at
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_update',
+        create: `CREATE TRIGGER ps_raw_refs_update
+          AFTER UPDATE ON raw_refs
+          FOR EACH ROW
+          BEGIN
+            SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'refs', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'name', NEW.name,
+              'target_sha', NEW.target_sha,
+              'updated_at', NEW.updated_at
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_delete',
+        create: `CREATE TRIGGER ps_raw_refs_delete
+          AFTER DELETE ON raw_refs
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type)
+            VALUES ('DELETE', OLD.id, 'refs');
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_insert',
+        create: `CREATE TRIGGER ps_raw_commits_insert
+          AFTER INSERT ON raw_commits
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'commits', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'sha', NEW.sha,
+              'author_name', NEW.author_name,
+              'author_email', NEW.author_email,
+              'authored_at', NEW.authored_at,
+              'message', NEW.message,
+              'tree_sha', NEW.tree_sha
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_update',
+        create: `CREATE TRIGGER ps_raw_commits_update
+          AFTER UPDATE ON raw_commits
+          FOR EACH ROW
+          BEGIN
+            SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'commits', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'sha', NEW.sha,
+              'author_name', NEW.author_name,
+              'author_email', NEW.author_email,
+              'authored_at', NEW.authored_at,
+              'message', NEW.message,
+              'tree_sha', NEW.tree_sha
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_delete',
+        create: `CREATE TRIGGER ps_raw_commits_delete
+          AFTER DELETE ON raw_commits
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type)
+            VALUES ('DELETE', OLD.id, 'commits');
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_insert',
+        create: `CREATE TRIGGER ps_raw_file_changes_insert
+          AFTER INSERT ON raw_file_changes
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'file_changes', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'commit_sha', NEW.commit_sha,
+              'path', NEW.path,
+              'additions', NEW.additions,
+              'deletions', NEW.deletions
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_update',
+        create: `CREATE TRIGGER ps_raw_file_changes_update
+          AFTER UPDATE ON raw_file_changes
+          FOR EACH ROW
+          BEGIN
+            SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'file_changes', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'commit_sha', NEW.commit_sha,
+              'path', NEW.path,
+              'additions', NEW.additions,
+              'deletions', NEW.deletions
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_delete',
+        create: `CREATE TRIGGER ps_raw_file_changes_delete
+          AFTER DELETE ON raw_file_changes
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type)
+            VALUES ('DELETE', OLD.id, 'file_changes');
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_insert',
+        create: `CREATE TRIGGER ps_raw_objects_insert
+          AFTER INSERT ON raw_objects
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'objects', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'pack_oid', NEW.pack_oid,
+              'pack_bytes', NEW.pack_bytes,
+              'created_at', NEW.created_at
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_update',
+        create: `CREATE TRIGGER ps_raw_objects_update
+          AFTER UPDATE ON raw_objects
+          FOR EACH ROW
+          BEGIN
+            SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
+            INSERT INTO powersync_crud (op, id, type, data)
+            VALUES ('PUT', NEW.id, 'objects', json_object(
+              'id', NEW.id,
+              'org_id', NEW.org_id,
+              'repo_id', NEW.repo_id,
+              'pack_oid', NEW.pack_oid,
+              'pack_bytes', NEW.pack_bytes,
+              'created_at', NEW.created_at
+            ));
+          END`,
+      },
+      {
+        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_delete',
+        create: `CREATE TRIGGER ps_raw_objects_delete
+          AFTER DELETE ON raw_objects
+          FOR EACH ROW
+          BEGIN
+            INSERT INTO powersync_crud (op, id, type)
+            VALUES ('DELETE', OLD.id, 'objects');
+          END`,
+      },
+    ];
+
+    for (const spec of triggerSpecs) {
+      await tx.execute(spec.drop);
+      await tx.execute(spec.create);
+    }
   });
 }
