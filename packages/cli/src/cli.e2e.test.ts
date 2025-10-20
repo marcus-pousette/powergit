@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { parsePowerSyncUrl, PowerSyncRemoteClient } from '@shared/core'
+import { parsePowerSyncUrl, PowerSyncRemoteClient, buildRepoStreamTargets, formatStreamKey } from '@shared/core'
 import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
 import { seedDemoRepository } from './index.js'
 import { loadStoredCredentials } from './auth/session.js'
@@ -448,12 +448,8 @@ describeLive('psgit sync against live PowerSync stack', () => {
     const daemonBaseUrl = process.env.POWERSYNC_DAEMON_URL ?? 'http://127.0.0.1:5030'
     const branchName = `cli-stream-${Date.now().toString(36)}`
     const { org, repo } = parsePowerSyncUrl(remoteUrl)
-    const streamIds = [
-      `orgs/${org}/repos/${repo}/refs`,
-      `orgs/${org}/repos/${repo}/commits`,
-      `orgs/${org}/repos/${repo}/file_changes`,
-      `orgs/${org}/repos/${repo}/objects`,
-    ]
+    const streamTargets = buildRepoStreamTargets(org, repo)
+    const streamKeys = streamTargets.map(formatStreamKey)
 
     const setupWorkingCopy = async (dir: string) => {
       await runGit(['init'], dir)
@@ -469,21 +465,21 @@ describeLive('psgit sync against live PowerSync stack', () => {
       const deleteRes = await fetch(`${daemonBaseUrl}/streams`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ streams: streamIds }),
+        body: JSON.stringify({ streams: streamTargets }),
       })
       expect(deleteRes.status).toBeLessThan(500)
 
       const afterDeleteStreams = await listDaemonStreams(daemonBaseUrl)
-      for (const streamId of streamIds) {
-        expect(afterDeleteStreams).not.toContain(streamId)
+      for (const key of streamKeys) {
+        expect(afterDeleteStreams).not.toContain(key)
       }
 
       const initialSync = await runCliInDir(repoDirB, ['sync', '--remote', remoteName])
       const initialCounts = parseSyncCounts(`${initialSync.stdout ?? ''}${initialSync.stderr ?? ''}`)
 
       const streamsAfterSync = await listDaemonStreams(daemonBaseUrl)
-      for (const streamId of streamIds) {
-        expect(streamsAfterSync).toContain(streamId)
+      for (const key of streamKeys) {
+        expect(streamsAfterSync).toContain(key)
       }
 
       await seedDemoRepository({

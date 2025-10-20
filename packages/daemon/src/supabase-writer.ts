@@ -11,6 +11,9 @@ export interface SupabaseWriterConfig {
 export interface SupabaseWriterOptions {
   database?: PowerSyncDatabase;
   config: SupabaseWriterConfig;
+  pollIntervalMs?: number;
+  retryDelayMs?: number;
+  batchSize?: number;
 }
 
 interface TableMetadata {
@@ -19,15 +22,20 @@ interface TableMetadata {
 }
 
 const TABLES: Record<string, TableMetadata> = {
-  refs: { table: 'raw_refs', conflictTarget: 'id' },
-  commits: { table: 'raw_commits', conflictTarget: 'id' },
-  file_changes: { table: 'raw_file_changes', conflictTarget: 'id' },
-  objects: { table: 'raw_objects', conflictTarget: 'id' },
+  refs: { table: 'refs', conflictTarget: 'id' },
+  commits: { table: 'commits', conflictTarget: 'id' },
+  file_changes: { table: 'file_changes', conflictTarget: 'id' },
+  objects: { table: 'objects', conflictTarget: 'id' },
 };
 
 export class SupabaseWriter {
   private readonly database?: PowerSyncDatabase;
   private readonly supabase: SupabaseClient;
+  private readonly pollIntervalMs: number;
+  private readonly retryDelayMs: number;
+  private pollTimer: NodeJS.Timeout | null = null;
+  private running = false;
+  private inFlight: Promise<void> | null = null;
 
   constructor(options: SupabaseWriterOptions) {
     this.database = options.database;
@@ -40,6 +48,54 @@ export class SupabaseWriter {
         },
       },
     }) as SupabaseClient;
+    this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    this.retryDelayMs = options.retryDelayMs ?? 5_000;
+  }
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.scheduleNext(0);
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.inFlight) {
+      try {
+        await this.inFlight;
+      } catch {
+        // ignore errors during shutdown
+      } finally {
+        this.inFlight = null;
+      }
+    }
+  }
+
+  private scheduleNext(delayMs: number): void {
+    if (!this.running) return;
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      const execute = async () => {
+        try {
+          await this.uploadPending();
+          if (this.running) {
+            this.scheduleNext(this.pollIntervalMs);
+          }
+        } catch (error) {
+          console.error('[powersync-daemon] supabase upload loop failed', error);
+          if (this.running) {
+            this.scheduleNext(this.retryDelayMs);
+          }
+        } finally {
+          this.inFlight = null;
+        }
+      };
+      this.inFlight = execute();
+    }, Math.max(0, delayMs));
   }
 
   async uploadPending(db?: AbstractPowerSyncDatabase): Promise<void> {

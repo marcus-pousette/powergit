@@ -52,10 +52,12 @@ export class Connector implements PowerSyncBackendConnector {
     if (!this.endpoint) {
       throw new Error('PowerSync endpoint is not configured. Set VITE_POWERSYNC_ENDPOINT to continue.')
     }
+    console.debug('[PowerSync][connector] resolving credentials for endpoint', this.endpoint)
     const token = await this.getToken()
     if (!token) {
       throw new Error('PowerSync token is not available. Sign in or configure VITE_POWERSYNC_TOKEN.')
     }
+    console.debug('[PowerSync][connector] obtained token (length)', token.length)
 
     return {
       endpoint: this.endpoint,

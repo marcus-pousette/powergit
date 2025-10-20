@@ -16,10 +16,10 @@ const sql = (input: string): string =>
 
 export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'objects', RawTableDefinition> = {
   refs: {
-    tableName: 'raw_refs',
+    tableName: 'refs',
     createStatements: [
       sql(`
-        CREATE TABLE IF NOT EXISTS raw_refs (
+        CREATE TABLE IF NOT EXISTS refs (
           id TEXT PRIMARY KEY,
           org_id TEXT NOT NULL,
           repo_id TEXT NOT NULL,
@@ -28,12 +28,12 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
           updated_at TEXT NOT NULL
         )
       `),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_refs_org_repo ON raw_refs(org_id, repo_id)'),
-      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_refs_org_repo_name ON raw_refs(org_id, repo_id, name)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_refs_org_repo ON refs(org_id, repo_id)'),
+      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_org_repo_name ON refs(org_id, repo_id, name)'),
     ],
     put: {
       sql: sql(`
-        INSERT INTO raw_refs (id, org_id, repo_id, name, target_sha, updated_at)
+        INSERT INTO refs (id, org_id, repo_id, name, target_sha, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id)
         DO UPDATE SET
@@ -52,13 +52,13 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
         { Column: 'updated_at' },
       ],
     },
-    delete: { sql: 'DELETE FROM raw_refs WHERE id = ?', params: ['Id'] },
+    delete: { sql: 'DELETE FROM refs WHERE id = ?', params: ['Id'] },
   },
   commits: {
-    tableName: 'raw_commits',
+    tableName: 'commits',
     createStatements: [
       sql(`
-        CREATE TABLE IF NOT EXISTS raw_commits (
+        CREATE TABLE IF NOT EXISTS commits (
           id TEXT PRIMARY KEY,
           org_id TEXT NOT NULL,
           repo_id TEXT NOT NULL,
@@ -70,13 +70,13 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
           tree_sha TEXT NOT NULL
         )
       `),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_commits_org_repo ON raw_commits(org_id, repo_id)'),
-      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_commits_org_repo_sha ON raw_commits(org_id, repo_id, sha)'),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_commits_author_email ON raw_commits(author_email)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_commits_org_repo ON commits(org_id, repo_id)'),
+      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_org_repo_sha ON commits(org_id, repo_id, sha)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_commits_author_email ON commits(author_email)'),
     ],
     put: {
       sql: sql(`
-        INSERT INTO raw_commits (id, org_id, repo_id, sha, author_name, author_email, authored_at, message, tree_sha)
+        INSERT INTO commits (id, org_id, repo_id, sha, author_name, author_email, authored_at, message, tree_sha)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id)
         DO UPDATE SET
@@ -101,13 +101,13 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
         { Column: 'tree_sha' },
       ],
     },
-    delete: { sql: 'DELETE FROM raw_commits WHERE id = ?', params: ['Id'] },
+    delete: { sql: 'DELETE FROM commits WHERE id = ?', params: ['Id'] },
   },
   file_changes: {
-    tableName: 'raw_file_changes',
+    tableName: 'file_changes',
     createStatements: [
       sql(`
-        CREATE TABLE IF NOT EXISTS raw_file_changes (
+        CREATE TABLE IF NOT EXISTS file_changes (
           id TEXT PRIMARY KEY,
           org_id TEXT NOT NULL,
           repo_id TEXT NOT NULL,
@@ -117,13 +117,13 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
           deletions INTEGER NOT NULL
         )
       `),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_file_changes_org_repo ON raw_file_changes(org_id, repo_id)'),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_file_changes_path ON raw_file_changes(path)'),
-      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_file_changes_commit_path ON raw_file_changes(org_id, repo_id, commit_sha, path)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_file_changes_org_repo ON file_changes(org_id, repo_id)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_file_changes_path ON file_changes(path)'),
+      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_file_changes_commit_path ON file_changes(org_id, repo_id, commit_sha, path)'),
     ],
     put: {
       sql: sql(`
-        INSERT INTO raw_file_changes (id, org_id, repo_id, commit_sha, path, additions, deletions)
+        INSERT INTO file_changes (id, org_id, repo_id, commit_sha, path, additions, deletions)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id)
         DO UPDATE SET
@@ -144,13 +144,13 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
         { Column: 'deletions' },
       ],
     },
-    delete: { sql: 'DELETE FROM raw_file_changes WHERE id = ?', params: ['Id'] },
+    delete: { sql: 'DELETE FROM file_changes WHERE id = ?', params: ['Id'] },
   },
   objects: {
-    tableName: 'raw_objects',
+    tableName: 'objects',
     createStatements: [
       sql(`
-        CREATE TABLE IF NOT EXISTS raw_objects (
+        CREATE TABLE IF NOT EXISTS objects (
           id TEXT PRIMARY KEY,
           org_id TEXT NOT NULL,
           repo_id TEXT NOT NULL,
@@ -159,12 +159,12 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
           created_at TEXT NOT NULL
         )
       `),
-      sql('CREATE INDEX IF NOT EXISTS idx_raw_objects_org_repo_created ON raw_objects(org_id, repo_id, created_at)'),
-      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_objects_oid ON raw_objects(org_id, repo_id, pack_oid)'),
+      sql('CREATE INDEX IF NOT EXISTS idx_objects_org_repo_created ON objects(org_id, repo_id, created_at)'),
+      sql('CREATE UNIQUE INDEX IF NOT EXISTS idx_objects_oid ON objects(org_id, repo_id, pack_oid)'),
     ],
     put: {
       sql: sql(`
-        INSERT INTO raw_objects (id, org_id, repo_id, pack_oid, pack_bytes, created_at)
+        INSERT INTO objects (id, org_id, repo_id, pack_oid, pack_bytes, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id)
         DO UPDATE SET
@@ -183,7 +183,7 @@ export const RAW_TABLE_SPECS: Record<'refs' | 'commits' | 'file_changes' | 'obje
         { Column: 'created_at' },
       ],
     },
-    delete: { sql: 'DELETE FROM raw_objects WHERE id = ?', params: ['Id'] },
+    delete: { sql: 'DELETE FROM objects WHERE id = ?', params: ['Id'] },
   },
 }
 

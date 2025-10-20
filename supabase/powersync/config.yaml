@@ -29,30 +29,4 @@ client_auth:
         k: !env PS_SUPABASE_JWT_SECRET_B64
 
 sync_rules:
-  orgs/{org_id}/repos/{repo_id}/refs:
-    table: refs
-    auto_subscribe: true
-    filter:
-      org_id: "{org_id}"
-      repo_id: "{repo_id}"
-
-  orgs/{org_id}/repos/{repo_id}/commits:
-    table: commits
-    auto_subscribe: true
-    filter:
-      org_id: "{org_id}"
-      repo_id: "{repo_id}"
-
-  orgs/{org_id}/repos/{repo_id}/file_changes:
-    table: file_changes
-    auto_subscribe: true
-    filter:
-      org_id: "{org_id}"
-      repo_id: "{repo_id}"
-
-  orgs/{org_id}/repos/{repo_id}/objects:
-    table: git_packs
-    auto_subscribe: true
-    filter:
-      org_id: "{org_id}"
-      repo_id: "{repo_id}"
+  path: sync-rules.yaml

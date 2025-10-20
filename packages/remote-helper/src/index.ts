@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { parsePowerSyncUrl, type GitPushSummary } from '@shared/core'
+import { parsePowerSyncUrl, type GitPushSummary, buildRepoStreamTargets } from '@shared/core'
 import { PowerSyncRemoteClient, type FetchPackResult, type PushPackResult } from '@shared/core/node'
 
 const ZERO_SHA = '0000000000000000000000000000000000000000'
@@ -14,6 +14,7 @@ const DAEMON_START_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_STA
 const DAEMON_CHECK_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_CHECK_TIMEOUT_MS ?? '2000', 10)
 const DAEMON_START_HINT =
   'PowerSync daemon unreachable — start it with "pnpm --filter @svc/daemon start" or point POWERSYNC_DAEMON_URL at a running instance.'
+
 
 interface FetchRequest { sha: string; name: string }
 interface PushRequest { src: string; dst: string; force?: boolean }
@@ -219,12 +220,8 @@ function ensureRemote(): { org: string; repo: string; endpoint: string; basePath
 
 async function ensureDaemonSubscribed(): Promise<void> {
   if (!parsed || typeof globalThis.fetch !== 'function') return
-  const streams = [
-    `orgs/${parsed.org}/repos/${parsed.repo}/refs`,
-    `orgs/${parsed.org}/repos/${parsed.repo}/commits`,
-    `orgs/${parsed.org}/repos/${parsed.repo}/file_changes`,
-    `orgs/${parsed.org}/repos/${parsed.repo}/objects`,
-  ]
+  const { org, repo } = parsed
+  const streams = buildRepoStreamTargets(org, repo)
   try {
     const res = await fetch(`${daemonBaseUrl}/streams`, {
       method: 'POST',

@@ -1,15 +1,18 @@
 import { fileURLToPath } from 'node:url';
-import { resolve as resolvePath } from 'node:path';
 import type { PowerSyncDatabase, SyncStreamSubscription } from '@powersync/node';
-import { DaemonAuthManager, type AuthStatusPayload } from './auth/index.js';
-import { DeviceAuthCoordinator } from './auth/device-flow.js';
 import { resolveDaemonConfig, type ResolveDaemonConfigOptions } from './config.js';
 import { DaemonPowerSyncConnector } from './connector.js';
 import { connectWithSchemaRecovery, createPowerSyncDatabase } from './database.js';
-import { ensureLocalSchema } from './local-schema.js';
-import { createDaemonServer } from './server.js';
+import {
+  createDaemonServer,
+  type StreamSubscriptionTarget,
+  type SubscribeStreamsResult,
+  type UnsubscribeStreamsResult,
+} from './server.js';
 import { getLatestPack, getRepoSummary, listRefs, listRepos, persistPush } from './queries.js';
 import type { PersistPushResult, PushUpdateRow } from './queries.js';
+import { ensureRawTables } from './raw-table-migration.js';
+import { ensureLocalSchema } from './local-schema.js';
 import { SupabaseWriter } from './supabase-writer.js';
 
 function normalizePackBytes(raw: unknown): { base64: string; size: number } | null {
@@ -51,102 +54,115 @@ function buildPushErrorResults(updates: PushUpdateRow[], message: string) {
   );
 }
 
+interface NormalizedStreamTarget {
+  id: string;
+  params: Record<string, unknown> | null;
+}
+
+function normalizeParameters(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!value) return null;
+  const sortedKeys = Object.keys(value).filter((key) => key.trim().length > 0).sort();
+  if (sortedKeys.length === 0) return null;
+  const normalized: Record<string, unknown> = {};
+  for (const key of sortedKeys) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    normalized[key.trim()] = raw;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function buildStreamKey(target: NormalizedStreamTarget): string {
+  if (!target.params || Object.keys(target.params).length === 0) {
+    return target.id;
+  }
+  const query = Object.entries(target.params)
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value ?? ''))}`)
+    .join('&');
+  return `${target.id}?${query}`;
+}
+
 class StreamSubscriptionManager {
-  private readonly desired = new Set<string>();
   private readonly active = new Map<string, SyncStreamSubscription>();
+  private readonly targets = new Map<string, NormalizedStreamTarget>();
 
   constructor(private readonly database: PowerSyncDatabase) {}
 
-  trackDesired(streamIds: readonly string[]): string[] {
-    const added: string[] = [];
-    for (const rawId of streamIds) {
-      const streamId = rawId.trim();
-      if (!streamId) continue;
-      if (!this.desired.has(streamId)) {
-        this.desired.add(streamId);
-        added.push(streamId);
-      }
-    }
-    return added;
-  }
-
-  listDesired(): string[] {
-    return Array.from(this.desired);
+  private normalize(target: StreamSubscriptionTarget): NormalizedStreamTarget | null {
+    const id = typeof target.id === 'string' ? target.id.trim() : '';
+    if (!id) return null;
+    const params =
+      target.parameters && typeof target.parameters === 'object' && !Array.isArray(target.parameters)
+        ? normalizeParameters(target.parameters as Record<string, unknown>)
+        : null;
+    return { id, params };
   }
 
   getActiveCount(): number {
     return this.active.size;
   }
 
-  async add(streamIds: readonly string[]): Promise<{ added: string[]; alreadyActive: string[] }> {
+  listKeys(): string[] {
+    return Array.from(this.targets.keys());
+  }
+
+  async subscribe(targets: StreamSubscriptionTarget[]): Promise<SubscribeStreamsResult> {
     const added: string[] = [];
     const alreadyActive: string[] = [];
+    const queued: string[] = [];
 
-    for (const rawId of streamIds) {
-      const streamId = rawId.trim();
-      if (!streamId) continue;
-
-      this.desired.add(streamId);
-
-      if (this.active.has(streamId)) {
-        alreadyActive.push(streamId);
+    for (const rawTarget of targets) {
+      const normalized = this.normalize(rawTarget);
+      if (!normalized) continue;
+      const key = buildStreamKey(normalized);
+      if (this.active.has(key)) {
+        alreadyActive.push(key);
         continue;
       }
-
       try {
-        const stream = this.database.syncStream(streamId);
+        const stream = this.database.syncStream(normalized.id, normalized.params ?? undefined);
         const subscription = await stream.subscribe();
-        this.active.set(streamId, subscription);
-        console.info(`[powersync-daemon] subscribed stream ${streamId}`);
-        added.push(streamId);
+        this.active.set(key, subscription);
+        this.targets.set(key, normalized);
+        added.push(key);
+        console.info(`[powersync-daemon] subscribed stream ${key}`);
       } catch (error) {
-        console.error(`[powersync-daemon] failed to subscribe stream ${streamId}`, error);
-        alreadyActive.push(streamId);
+        console.error(`[powersync-daemon] failed to subscribe stream ${key}`, error);
       }
     }
 
-    return { added, alreadyActive };
+    return { added, alreadyActive, queued };
   }
 
-  async remove(streamIds: readonly string[]): Promise<{ removed: string[]; notFound: string[] }> {
+  async unsubscribe(targets: StreamSubscriptionTarget[]): Promise<UnsubscribeStreamsResult> {
     const removed: string[] = [];
     const notFound: string[] = [];
 
-    for (const rawId of streamIds) {
-      const streamId = rawId.trim();
-      if (!streamId) continue;
-
-      this.desired.delete(streamId);
-      const subscription = this.active.get(streamId);
+    for (const rawTarget of targets) {
+      const normalized = this.normalize(rawTarget);
+      if (!normalized) continue;
+      const key = buildStreamKey(normalized);
+      const subscription = this.active.get(key);
       if (!subscription) {
-        notFound.push(streamId);
+        notFound.push(key);
         continue;
       }
       try {
         subscription.unsubscribe();
       } catch (error) {
         console.warn('[powersync-daemon] failed to unsubscribe stream', error);
-      } finally {
-        this.active.delete(streamId);
       }
-      removed.push(streamId);
+      this.active.delete(key);
+      this.targets.delete(key);
+      removed.push(key);
     }
 
     return { removed, notFound };
   }
 
-  async resubscribeAll(): Promise<void> {
-    await this.closeAll();
-    const desired = Array.from(this.desired);
-    if (desired.length === 0) return;
-    await this.add(desired);
-  }
-
   async closeAll(): Promise<void> {
-    const subscriptions = Array.from(this.active.values());
-    this.active.clear();
     await Promise.all(
-      subscriptions.map(async (subscription) => {
+      Array.from(this.active.values()).map(async (subscription) => {
         try {
           subscription.unsubscribe();
         } catch (error) {
@@ -154,42 +170,78 @@ class StreamSubscriptionManager {
         }
       }),
     );
+    this.active.clear();
+    this.targets.clear();
   }
-
 }
 
 export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Promise<void> {
   const config = await resolveDaemonConfig(options);
   console.info(`[powersync-daemon] starting (db: ${config.dbPath})`);
 
+  let authToken: string | null = config.token ?? null;
+  let authEndpoint: string | null = config.endpoint ?? null;
+  let authExpiresAt: string | null = null;
+  let authMetadata: Record<string, unknown> | null = null;
+
+  const buildAuthContext = (): Record<string, unknown> | null => {
+    const context: Record<string, unknown> = {};
+    if (authEndpoint) {
+      context.endpoint = authEndpoint;
+    }
+    if (authMetadata) {
+      Object.assign(context, authMetadata);
+    }
+    return Object.keys(context).length > 0 ? context : null;
+  };
+
   const startedAt = new Date();
+  const database = await createPowerSyncDatabase({ dbPath: config.dbPath });
+  await ensureRawTables(database, { verbose: true });
+  await ensureLocalSchema(database);
+  const subscriptionManager = new StreamSubscriptionManager(database);
 
-  const initialCredentials =
-    config.endpoint && config.token
-      ? {
-          endpoint: config.endpoint,
-          token: config.token,
-          authType: 'env' as const,
-        }
-      : undefined;
+  const supabaseUrl = process.env.POWERSYNC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? null;
+  const supabaseServiceRole =
+    process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? null;
+  const supabaseSchema = process.env.POWERSYNC_SUPABASE_SCHEMA ?? process.env.SUPABASE_DB_SCHEMA ?? undefined;
 
-  const authManager = await DaemonAuthManager.create({
-    sessionPath: config.authSessionPath,
-    defaultEndpoint: config.endpoint,
-    initialCredentials,
+  let supabaseWriter: SupabaseWriter | null = null;
+  if (supabaseUrl && supabaseServiceRole) {
+    supabaseWriter = new SupabaseWriter({
+      database,
+      config: {
+        url: supabaseUrl,
+        serviceRoleKey: supabaseServiceRole,
+        schema: supabaseSchema,
+      },
+    });
+    supabaseWriter.start();
+    console.info('[powersync-daemon] Supabase writer started');
+  } else {
+    console.info('[powersync-daemon] Supabase writer disabled (missing POWERSYNC_SUPABASE_URL or POWERSYNC_SUPABASE_SERVICE_ROLE_KEY)');
+  }
+  const connector = new DaemonPowerSyncConnector({
+    credentialsProvider: async () => {
+      if (authEndpoint && authToken) {
+        return { endpoint: authEndpoint, token: authToken };
+      }
+      return null;
+    },
   });
 
-  const deviceCoordinator = new DeviceAuthCoordinator({
-    authManager,
-    verificationUrl: config.auth?.deviceVerificationUrl ?? null,
-    autoLaunch: config.auth?.deviceAutoLaunch ?? false,
-    challengeTtlMs: config.auth?.deviceChallengeTtlMs,
-    logger: (message) => console.info('[powersync-daemon][auth]', message),
+  await connectWithSchemaRecovery(database, {
+    connector,
+    dbPath: config.dbPath,
+    includeDefaultStreams: false,
   });
+  await ensureRawTables(database, { verbose: true });
+  await ensureLocalSchema(database);
+
+  const connectedAt = new Date();
+  console.info('[powersync-daemon] connected to PowerSync backend');
 
   let running = true;
-  let connectionReady = false;
-  let connectedAt: Date | null = null;
   const abortController = new AbortController();
   const requestShutdown = (reason: string) => {
     if (abortController.signal.aborted) return;
@@ -198,296 +250,117 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     abortController.abort();
   };
 
-  const authUnsubscribe = authManager.subscribe((state) => {
-    switch (state.status) {
-      case 'ready':
-        console.info('[powersync-daemon] authentication ready; token obtained');
-        break;
-      case 'pending':
-        console.info('[powersync-daemon] authentication pending', state.reason ?? '');
-        break;
-      case 'auth_required':
-        console.info('[powersync-daemon] authentication required', state.reason ?? '');
-        break;
-      case 'error':
-        console.warn('[powersync-daemon] authentication error', state.reason ?? '');
-        break;
-      default:
-        break;
-    }
-  });
-
-  const database = await createPowerSyncDatabase({ dbPath: config.dbPath });
-  const streamManager = new StreamSubscriptionManager(database);
-  const initialQueued = streamManager.trackDesired(config.initialStreams);
-  if (initialQueued.length > 0) {
-    console.info(
-      `[powersync-daemon] queued initial streams from config: ${initialQueued.map((s) => `"${s}"`).join(', ')}`,
-    );
-  }
-
-  const supabaseWriter = config.supabase
-    ? new SupabaseWriter({
-        database,
-        config: config.supabase,
+  if (config.initialStreams.length > 0) {
+    const initialTargets = config.initialStreams
+      .map((id): StreamSubscriptionTarget | null => {
+        const trimmed = typeof id === 'string' ? id.trim() : '';
+        return trimmed ? { id: trimmed } : null;
       })
-    : null;
-
-  const connector = new DaemonPowerSyncConnector({
-    credentialsProvider: async () => {
-      const credentials = await authManager.waitForCredentials({ signal: abortController.signal });
-      if (!credentials) {
-        return null;
-      }
-      return { endpoint: credentials.endpoint, token: credentials.token };
-    },
-    uploadHandler: supabaseWriter
-      ? async (db) => {
-          await supabaseWriter.uploadPending(db);
-        }
-      : undefined,
-  });
-
-  await ensureLocalSchema(database);
-
-  type AuthActionResponse = AuthStatusPayload & { httpStatus?: number };
-
-  const coerceString = (value: unknown): string | null => {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  };
-
-  const coerceMetadata = (value: unknown): Record<string, unknown> | null => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-    return value as Record<string, unknown>;
-  };
-
-  const extractChallengeId = (payload: Record<string, unknown>): string | null => {
-    const direct =
-      coerceString(payload.challengeId) ??
-      coerceString(payload.deviceCode) ??
-      coerceString((payload as { device_code?: unknown }).device_code) ??
-      coerceString(payload.code) ??
-      coerceString(payload.state);
-    if (direct) return direct;
-
-    const metadata = coerceMetadata(payload.metadata);
-    if (!metadata) return null;
-
-    return (
-      coerceString(metadata.challengeId) ??
-      coerceString(metadata.deviceCode) ??
-      coerceString((metadata as { device_code?: unknown }).device_code) ??
-      null
-    );
-  };
-
-  const extractToken = (payload: Record<string, unknown>): string | null => {
-    const direct = coerceString(payload.token);
-    if (direct) return direct;
-
-    const tokenRecord = coerceMetadata(payload.token);
-    if (tokenRecord) {
-      const nested = coerceString(tokenRecord.token) ?? coerceString(tokenRecord.value);
-      if (nested) return nested;
-    }
-
-    const credentialsRecord = coerceMetadata(payload.credentials);
-    if (credentialsRecord) {
-      const nested = coerceString(credentialsRecord.token) ?? coerceString(credentialsRecord.value);
-      if (nested) return nested;
-    }
-
-    const accessToken = coerceString(payload.accessToken) ?? coerceString(payload.value);
-    if (accessToken) return accessToken;
-
-    return null;
-  };
-
-  const extractEndpoint = (payload: Record<string, unknown>): string | null => {
-    return (
-      coerceString(payload.endpoint) ??
-      coerceString(payload.endpointUrl) ??
-      coerceString(payload.url) ??
-      coerceString(payload.baseUrl) ??
-      (() => {
-        const credentialsRecord = coerceMetadata(payload.credentials);
-        if (!credentialsRecord) return null;
-        return (
-          coerceString(credentialsRecord.endpoint) ??
-          coerceString(credentialsRecord.url) ??
-          coerceString(credentialsRecord.baseUrl) ??
-          null
-        );
-      })()
-    );
-  };
-
-  const fallbackToken = (): string | null => {
-    return (
-      coerceString(process.env.POWERSYNC_DAEMON_GUEST_TOKEN) ??
-      coerceString(process.env.POWERSYNC_DAEMON_TOKEN) ??
-      coerceString(process.env.POWERSYNC_TOKEN)
-    );
-  };
-
-  const fallbackEndpoint = (): string | null => {
-    return (
-      coerceString(authManager.getDefaultEndpoint()) ??
-      coerceString(config.endpoint) ??
-      coerceString(process.env.POWERSYNC_DAEMON_ENDPOINT) ??
-      coerceString(process.env.POWERSYNC_ENDPOINT)
-    );
-  };
-
-  const withStatus = (payload: AuthStatusPayload, httpStatus?: number): AuthActionResponse =>
-    typeof httpStatus === 'number' ? { ...payload, httpStatus } : payload;
-
-  const handleGuestAuth = async (payload: Record<string, unknown>): Promise<AuthActionResponse> => {
-    const token = extractToken(payload) ?? fallbackToken();
-    if (!token) {
-      await authManager.setAuthRequired('Guest login requires a PowerSync token');
-      return withStatus({ status: 'auth_required', reason: 'Guest login requires a PowerSync token' }, 400);
-    }
-
-    const endpoint = extractEndpoint(payload) ?? fallbackEndpoint();
-    if (!endpoint) {
-      await authManager.setAuthRequired('Guest login requires a PowerSync endpoint');
-      return withStatus({ status: 'auth_required', reason: 'Guest login requires a PowerSync endpoint' }, 400);
-    }
-
-    const expiresAt = coerceString(payload.expiresAt);
-    const obtainedAt = coerceString(payload.obtainedAt);
-    const metadata = coerceMetadata(payload.metadata);
-
-    try {
-      await authManager.setReadyCredentials(
-        {
-          endpoint,
-          token,
-          expiresAt: expiresAt ?? undefined,
-          obtainedAt: obtainedAt ?? undefined,
-          metadata: metadata ?? undefined,
-        },
-        { source: 'guest' },
-      );
-      return withStatus(authManager.getStatusPayload(), 200);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Guest authentication failed';
-      await authManager.setError(message);
-      return withStatus({ status: 'error', reason: message }, 400);
-    }
-  };
-
-  const handleDeviceAuth = async (payload: Record<string, unknown>): Promise<AuthActionResponse> => {
-    const metadata = coerceMetadata(payload.metadata);
-    const challengeId = extractChallengeId(payload);
-    const token = extractToken(payload);
-
-    if (token) {
-      const endpoint = extractEndpoint(payload) ?? fallbackEndpoint();
-      const expiresAt = coerceString(payload.expiresAt);
-      const obtainedAt = coerceString(payload.obtainedAt);
-
-      if (challengeId) {
-        const ok = await deviceCoordinator.complete({
-          challengeId,
-          token,
-          endpoint,
-          expiresAt: expiresAt ?? null,
-          obtainedAt: obtainedAt ?? null,
-          metadata: metadata ?? undefined,
-          source: 'device',
-        });
-        const status = authManager.getStatusPayload();
-        return withStatus(status, ok ? 200 : 400);
-      }
-
-      if (!endpoint) {
-        await authManager.setError('Device authentication requires a PowerSync endpoint');
-        return withStatus({ status: 'error', reason: 'Device authentication requires a PowerSync endpoint' }, 400);
-      }
-
-      try {
-        await authManager.setReadyCredentials(
-          {
-            endpoint,
-            token,
-            expiresAt: expiresAt ?? undefined,
-            obtainedAt: obtainedAt ?? undefined,
-            metadata: metadata ?? undefined,
-          },
-          { source: 'device' },
-        );
-        return withStatus(authManager.getStatusPayload(), 200);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Device authentication failed';
-        await authManager.setError(message);
-        return withStatus({ status: 'error', reason: message }, 400);
+      .filter((value): value is StreamSubscriptionTarget => value !== null);
+    if (initialTargets.length > 0) {
+      const initialResult = await subscriptionManager.subscribe(initialTargets);
+      if (initialResult.added.length > 0) {
+        console.info('[powersync-daemon] subscribed initial streams', initialResult.added);
       }
     }
-
-    const mode = coerceString(payload.mode);
-    await deviceCoordinator.begin({
-      endpoint: extractEndpoint(payload) ?? fallbackEndpoint(),
-      metadata: metadata ?? undefined,
-      mode,
-    });
-    return withStatus(authManager.getStatusPayload(), 202);
-  };
-
-  const handleAuthLogout = async (): Promise<AuthActionResponse> => {
-    await authManager.logout('logout requested');
-    return withStatus(authManager.getStatusPayload(), 200);
-  };
-
-  const normalizeStreamIds = (ids: readonly string[]): string[] =>
-    Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
-
-  const subscribeStreams = async (streamIds: string[]) => {
-    const normalized = normalizeStreamIds(streamIds);
-    if (normalized.length === 0) {
-      return { added: [], alreadyActive: [], queued: [] };
-    }
-    if (!connectionReady) {
-      const queued = streamManager.trackDesired(normalized);
-      return { added: [], alreadyActive: [], queued };
-    }
-    const result = await streamManager.add(normalized);
-    return { ...result, queued: [] };
-  };
-
-  const unsubscribeStreams = async (streamIds: string[]) => {
-    const normalized = normalizeStreamIds(streamIds);
-    if (normalized.length === 0) {
-      return { removed: [], notFound: [] };
-    }
-    return streamManager.remove(normalized);
-  };
-
-  const listStreams = () => streamManager.listDesired();
+  }
 
   const server = createDaemonServer({
     host: config.host,
     port: config.port,
     getStatus: () => ({
       startedAt: startedAt.toISOString(),
-      connected: connectionReady,
-      connectedAt: connectedAt ? connectedAt.toISOString() : undefined,
-      streamCount: streamManager.getActiveCount(),
+      connected: running,
+      connectedAt: connectedAt.toISOString(),
+      streamCount: subscriptionManager.getActiveCount(),
     }),
-    getAuthStatus: () => authManager.getStatusPayload(),
-    handleAuthGuest: handleGuestAuth,
-    handleAuthDevice: handleDeviceAuth,
-    handleAuthLogout: handleAuthLogout,
-    listStreams,
-    subscribeStreams,
-    unsubscribeStreams,
     onShutdownRequested: () => {
       requestShutdown('rpc');
+    },
+    cors: {
+      origins: ['*'],
+      allowHeaders: ['Content-Type', 'Authorization'],
+      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    },
+    getAuthStatus: () => {
+      if (authEndpoint && authToken) {
+        return {
+          status: 'ready',
+          token: authToken,
+          expiresAt: authExpiresAt,
+          context: buildAuthContext(),
+        };
+      }
+      if (authEndpoint || authToken) {
+        return {
+          status: 'pending',
+          reason: 'PowerSync credentials are incomplete; supply both endpoint and token.',
+          context: buildAuthContext(),
+        };
+      }
+      return {
+        status: 'auth_required',
+        reason: 'PowerSync credentials missing; run `psgit login --guest`.',
+        context: buildAuthContext(),
+      };
+    },
+    handleAuthGuest: async (payload) => {
+      const tokenCandidate =
+        typeof payload?.token === 'string' ? payload.token.trim() : '';
+      const endpointCandidate =
+        typeof payload?.endpoint === 'string' ? payload.endpoint.trim() : '';
+
+      if (tokenCandidate) {
+        authToken = tokenCandidate;
+      }
+      if (endpointCandidate) {
+        authEndpoint = endpointCandidate;
+      }
+
+      const expiresAtCandidate =
+        typeof payload?.expiresAt === 'string' ? payload.expiresAt : null;
+      authExpiresAt = expiresAtCandidate;
+
+      const metadataCandidate = payload?.metadata;
+      if (metadataCandidate && typeof metadataCandidate === 'object' && !Array.isArray(metadataCandidate)) {
+        authMetadata = { ...metadataCandidate };
+      }
+
+      if (!authEndpoint || !authToken) {
+        return {
+          status: 'auth_required',
+          reason: 'Endpoint or token missing from guest payload.',
+          context: buildAuthContext(),
+        };
+      }
+
+      console.info('[powersync-daemon] accepted guest credentials');
+      return {
+        status: 'ready',
+        token: authToken,
+        expiresAt: authExpiresAt,
+        context: buildAuthContext(),
+      };
+    },
+    handleAuthLogout: async () => {
+      authToken = null;
+      authEndpoint = null;
+      authExpiresAt = null;
+      authMetadata = null;
+      return {
+        status: 'auth_required',
+        reason: 'Daemon logged out.',
+        context: buildAuthContext(),
+      };
+    },
+    listStreams: () => subscriptionManager.listKeys(),
+    subscribeStreams: async (streams) => {
+      const result = await subscriptionManager.subscribe(streams);
+      return result;
+    },
+    unsubscribeStreams: async (streams) => {
+      const result = await subscriptionManager.unsubscribe(streams);
+      return result;
     },
     fetchRefs: ({ orgId, repoId, limit }) => listRefs(database, { orgId, repoId, limit }),
     listRepos: ({ orgId, limit }) => listRepos(database, { orgId, limit }),
@@ -531,9 +404,6 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
           summary: payload.summary ?? undefined,
           dryRun: payload.dryRun === true,
         });
-        if (supabaseWriter) {
-          await supabaseWriter.uploadPending();
-        }
         if (result.packSize !== undefined) {
           console.info(
             `[powersync-daemon] stored pack for ${orgId}/${repoId} (oid: ${result.packOid ?? 'unknown'}, size: ${result.packSize} bytes)`,
@@ -552,35 +422,6 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     },
   });
 
-  const connectionTask = (async () => {
-    try {
-      await connectWithSchemaRecovery(database, {
-        connector,
-        dbPath: config.dbPath,
-        includeDefaultStreams: false,
-      });
-      if (!running && abortController.signal.aborted) {
-        return;
-      }
-      connectionReady = true;
-      connectedAt = new Date();
-      console.info('[powersync-daemon] connected to PowerSync backend');
-      await streamManager.resubscribeAll();
-      console.info(
-        `[powersync-daemon] active stream subscriptions: ${streamManager.getActiveCount()} (desired: ${streamManager.listDesired().length})`,
-      );
-      if (supabaseWriter) {
-        console.info('[powersync-daemon] Supabase upload handler ready');
-      }
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        return;
-      }
-      console.error('[powersync-daemon] failed to establish PowerSync connection', error);
-      requestShutdown('powersync-connect');
-    }
-  })();
-
   const address = await server.listen();
   const listenHost = address.family === 'IPv6' ? `[${address.address}]` : address.address;
   console.info(`[powersync-daemon] listening on http://${listenHost}:${address.port}`);
@@ -598,16 +439,18 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     abortController.signal.addEventListener('abort', () => resolve(), { once: true });
   });
 
-  await streamManager.closeAll();
-  connectionReady = false;
-  connectedAt = null;
+  await subscriptionManager.closeAll();
+  if (supabaseWriter) {
+    await supabaseWriter.stop().catch((error) => {
+      console.warn('[powersync-daemon] failed to stop Supabase writer', error);
+    });
+  }
   await database.close({ disconnect: true }).catch((error) => {
     console.warn('[powersync-daemon] failed to close database', error);
   });
   await server.close().catch((error) => {
     console.warn('[powersync-daemon] failed to stop HTTP server', error);
   });
-  authUnsubscribe();
 
   if (typeof process.stdin?.pause === 'function') {
     process.stdin.pause();
@@ -616,11 +459,11 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   console.info('[powersync-daemon] shutdown complete');
 }
 
-const entryModulePath = fileURLToPath(import.meta.url);
-const invokedPath = process.argv?.[1] ? resolvePath(process.argv[1]) : null;
-if (invokedPath && entryModulePath === invokedPath) {
+const executedDirectly = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (executedDirectly) {
   startDaemon().catch((error) => {
-    console.error('[powersync-daemon] failed to start', error);
-    process.exit(1);
+    console.error('[powersync-daemon] fatal error', error);
+    process.exitCode = 1;
   });
 }

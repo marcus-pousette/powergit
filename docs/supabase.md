@@ -20,7 +20,7 @@ The PowerSync-first architecture stores Git metadata in Supabase while the Power
 
 ## Local Development
 
-1. Apply the latest migrations (e.g. `supabase/migrations/20241007090000_powersync_git_tables.sql`) with `supabase db push`. This targets the local stack if it is already running, or your linked Supabase project otherwise.
+1. Apply the latest migrations (`supabase db push`). This targets the local stack if it is already running, or your linked Supabase project otherwise and ensures the `refs`, `commits`, `file_changes`, and `objects` tables exist.
 2. Start the combined Supabase + PowerSync stack:
    ```bash
    pnpm dev:stack

@@ -2,7 +2,7 @@
 
 services:
   powersync:
-    image: ${POWERSYNC_IMAGE:-journeyapps/powersync-service:latest}
+    image: ${POWERSYNC_IMAGE:-powersync-service:dev}
     container_name: powersync-local
     restart: unless-stopped
     environment:
@@ -25,6 +25,7 @@ services:
     volumes:
       - powersync-storage:/var/lib/powersync/storage
       - ./powersync/config.yaml:/config/config.yaml:ro
+      - ./powersync/sync-rules.yaml:/config/sync-rules.yaml:ro
 
 volumes:
   powersync-storage:

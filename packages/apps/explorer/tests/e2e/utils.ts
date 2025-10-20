@@ -235,6 +235,10 @@ export async function installSupabaseMock(page: Page, options: SupabaseMockOptio
     authenticated = false,
   } = options
   await page.addInitScript(({ baseUserId, baseEmail, baseToken, startAuthenticated }) => {
+    const globalWindow = window as typeof window & { __skipSupabaseMock?: boolean }
+    if (globalWindow.__skipSupabaseMock) {
+      return
+    }
     console.log('[SupabaseMock] installing mock client')
     type MockSession = {
       access_token: string

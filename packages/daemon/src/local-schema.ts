@@ -9,14 +9,14 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
       }
     }
 
-    // Raw tables require triggers to forward local writes into powersync_crud so that
+    // Git metadata tables require triggers to forward local writes into powersync_crud so that
     // PowerSync can upload mutations to the backend. We recreate the triggers on each
     // bootstrap to ensure schema drift is handled.
     const triggerSpecs: Array<{ drop: string; create: string }> = [
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_insert',
-        create: `CREATE TRIGGER ps_raw_refs_insert
-          AFTER INSERT ON raw_refs
+        drop: 'DROP TRIGGER IF EXISTS ps_refs_insert',
+        create: `CREATE TRIGGER ps_refs_insert
+          AFTER INSERT ON refs
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type, data)
@@ -31,9 +31,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_update',
-        create: `CREATE TRIGGER ps_raw_refs_update
-          AFTER UPDATE ON raw_refs
+        drop: 'DROP TRIGGER IF EXISTS ps_refs_update',
+        create: `CREATE TRIGGER ps_refs_update
+          AFTER UPDATE ON refs
           FOR EACH ROW
           BEGIN
             SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
@@ -49,9 +49,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_refs_delete',
-        create: `CREATE TRIGGER ps_raw_refs_delete
-          AFTER DELETE ON raw_refs
+        drop: 'DROP TRIGGER IF EXISTS ps_refs_delete',
+        create: `CREATE TRIGGER ps_refs_delete
+          AFTER DELETE ON refs
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type)
@@ -59,9 +59,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_insert',
-        create: `CREATE TRIGGER ps_raw_commits_insert
-          AFTER INSERT ON raw_commits
+        drop: 'DROP TRIGGER IF EXISTS ps_commits_insert',
+        create: `CREATE TRIGGER ps_commits_insert
+          AFTER INSERT ON commits
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type, data)
@@ -79,9 +79,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_update',
-        create: `CREATE TRIGGER ps_raw_commits_update
-          AFTER UPDATE ON raw_commits
+        drop: 'DROP TRIGGER IF EXISTS ps_commits_update',
+        create: `CREATE TRIGGER ps_commits_update
+          AFTER UPDATE ON commits
           FOR EACH ROW
           BEGIN
             SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
@@ -100,9 +100,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_commits_delete',
-        create: `CREATE TRIGGER ps_raw_commits_delete
-          AFTER DELETE ON raw_commits
+        drop: 'DROP TRIGGER IF EXISTS ps_commits_delete',
+        create: `CREATE TRIGGER ps_commits_delete
+          AFTER DELETE ON commits
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type)
@@ -110,9 +110,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_insert',
-        create: `CREATE TRIGGER ps_raw_file_changes_insert
-          AFTER INSERT ON raw_file_changes
+        drop: 'DROP TRIGGER IF EXISTS ps_file_changes_insert',
+        create: `CREATE TRIGGER ps_file_changes_insert
+          AFTER INSERT ON file_changes
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type, data)
@@ -128,9 +128,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_update',
-        create: `CREATE TRIGGER ps_raw_file_changes_update
-          AFTER UPDATE ON raw_file_changes
+        drop: 'DROP TRIGGER IF EXISTS ps_file_changes_update',
+        create: `CREATE TRIGGER ps_file_changes_update
+          AFTER UPDATE ON file_changes
           FOR EACH ROW
           BEGIN
             SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
@@ -147,9 +147,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_file_changes_delete',
-        create: `CREATE TRIGGER ps_raw_file_changes_delete
-          AFTER DELETE ON raw_file_changes
+        drop: 'DROP TRIGGER IF EXISTS ps_file_changes_delete',
+        create: `CREATE TRIGGER ps_file_changes_delete
+          AFTER DELETE ON file_changes
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type)
@@ -157,9 +157,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_insert',
-        create: `CREATE TRIGGER ps_raw_objects_insert
-          AFTER INSERT ON raw_objects
+        drop: 'DROP TRIGGER IF EXISTS ps_objects_insert',
+        create: `CREATE TRIGGER ps_objects_insert
+          AFTER INSERT ON objects
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type, data)
@@ -174,9 +174,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_update',
-        create: `CREATE TRIGGER ps_raw_objects_update
-          AFTER UPDATE ON raw_objects
+        drop: 'DROP TRIGGER IF EXISTS ps_objects_update',
+        create: `CREATE TRIGGER ps_objects_update
+          AFTER UPDATE ON objects
           FOR EACH ROW
           BEGIN
             SELECT CASE WHEN OLD.id != NEW.id THEN RAISE(FAIL, 'Cannot update id') END;
@@ -192,9 +192,9 @@ export async function ensureLocalSchema(database: PowerSyncDatabase): Promise<vo
           END`,
       },
       {
-        drop: 'DROP TRIGGER IF EXISTS ps_raw_objects_delete',
-        create: `CREATE TRIGGER ps_raw_objects_delete
-          AFTER DELETE ON raw_objects
+        drop: 'DROP TRIGGER IF EXISTS ps_objects_delete',
+        create: `CREATE TRIGGER ps_objects_delete
+          AFTER DELETE ON objects
           FOR EACH ROW
           BEGIN
             INSERT INTO powersync_crud (op, id, type)

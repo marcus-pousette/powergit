@@ -2,13 +2,20 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import type { Page } from '@playwright/test'
 import { test, expect } from './diagnostics'
 import { BASE_URL } from 'playwright.config'
 import { parsePowerSyncUrl } from '@shared/core'
-import type { RepoFixturePayload } from '../../src/testing/fixtures'
 
-const WAIT_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_WAIT_MS ?? '120000', 10)
+const WAIT_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_WAIT_MS ?? '300000', 10)
 const WAIT_INTERVAL_MS = Number.parseInt(process.env.POWERSYNC_E2E_POLL_MS ?? '1500', 10)
+const FAIL_FAST_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_FAIL_FAST_MS ?? '20000', 10)
+
+interface DaemonBranch {
+  name: string
+  targetSha: string | null
+  updatedAt: string | null
+}
 
 const REQUIRED_ENV_VARS = [
   'POWERSYNC_SUPABASE_URL',
@@ -24,6 +31,29 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const repoRoot = resolve(process.cwd(), '../../..')
 const STACK_ENV_PATH = process.env.POWERSYNC_STACK_ENV_PATH ?? resolve(repoRoot, '.env.powersync-stack')
+
+function sanitizeBranchList(rows: Array<Record<string, unknown>> | undefined | null): DaemonBranch[] {
+  if (!rows || rows.length === 0) return []
+  const seen = new Set<string>()
+  const branches: DaemonBranch[] = []
+  for (const entry of rows) {
+    const rawName = typeof entry?.name === 'string' ? entry.name : ''
+    if (!rawName.startsWith('refs/heads/')) continue
+    const name = rawName.replace(/^refs\/heads\//, '').trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const target = typeof entry?.target_sha === 'string' && entry.target_sha.trim().length > 0 ? entry.target_sha.trim() : null
+    const updated =
+      typeof entry?.updated_at === 'string' && entry.updated_at.trim().length > 0 ? entry.updated_at.trim() : null
+    branches.push({
+      name,
+      targetSha: target,
+      updatedAt: updated,
+    })
+  }
+  branches.sort((a, b) => a.name.localeCompare(b.name))
+  return branches
+}
 
 function applyStackEnvExports() {
   if (!existsSync(STACK_ENV_PATH)) return
@@ -49,25 +79,14 @@ function applyStackEnvExports() {
   }
 }
 
-async function fetchRepoFixture(baseUrl: string, orgId: string, repoId: string): Promise<RepoFixturePayload> {
+async function fetchDaemonBranches(baseUrl: string, orgId: string, repoId: string): Promise<DaemonBranch[]> {
   const url = `${normalizeBaseUrl(baseUrl)}/orgs/${encodeURIComponent(orgId)}/repos/${encodeURIComponent(repoId)}/refs`
   const res = await fetch(url)
   if (!res.ok) {
     throw new Error(`Failed to fetch refs from daemon (${res.status} ${res.statusText})`)
   }
-  const json = (await res.json()) as { refs?: Array<{ name?: string; target_sha?: string; updated_at?: string }> }
-  const branches = (json.refs ?? []).map((ref, index) => ({
-    name: ref.name ?? `branch-${index}`,
-    target_sha: ref.target_sha ?? null,
-    updated_at: ref.updated_at ?? null,
-  }))
-  return {
-    orgId,
-    repoId,
-    branches,
-    commits: [],
-    fileChanges: [],
-  }
+  const json = (await res.json()) as { refs?: Array<Record<string, unknown>> }
+  return sanitizeBranchList(json.refs ?? [])
 }
 
 function requireEnv(name: string): string {
@@ -137,21 +156,88 @@ async function waitForRepoSeed(baseUrl: string, orgId: string, repoId: string, t
   throw new Error(`Repository ${orgId}/${repoId} did not report data within ${timeoutMs}ms`)
 }
 
+async function readPowerSyncStatus(page: Page) {
+  return page.evaluate(() => {
+    const global = window as typeof window & {
+      __powersyncDb?: {
+        currentStatus?:
+          | {
+              toJSON?: () => unknown
+              downloadError?: { name?: string; message?: string; stack?: string; cause?: unknown } | null
+            }
+          | undefined
+      }
+    }
+    const status = global.__powersyncDb?.currentStatus ?? null
+    if (status && typeof status === 'object' && typeof (status as { toJSON?: () => unknown }).toJSON === 'function') {
+      try {
+        const plain = (status as { toJSON: () => unknown }).toJSON() as Record<string, unknown>
+        const downloadError = (status as { downloadError?: Record<string, unknown> | null }).downloadError ?? null
+        if (downloadError && typeof downloadError === 'object') {
+          plain.downloadError = {
+            name: (downloadError as { name?: unknown }).name ?? null,
+            message: (downloadError as { message?: unknown }).message ?? null,
+            stack: (downloadError as { stack?: unknown }).stack ?? null,
+            cause: (downloadError as { cause?: unknown }).cause ?? null,
+            keys: Object.keys(downloadError as Record<string, unknown>),
+          }
+        }
+        return plain
+      } catch (error) {
+        return {
+          raw: status,
+          error: error instanceof Error ? error.message : String(error),
+          downloadError:
+            typeof status === 'object' && status && 'downloadError' in status
+              ? (status as { downloadError?: unknown }).downloadError ?? null
+              : null,
+        }
+      }
+    }
+    return status
+  })
+}
+
+async function waitForPowerSyncConnected(page: Page, timeoutMs: number, intervalMs: number) {
+  const deadline = Date.now() + timeoutMs
+  let lastStatus: unknown = null
+  while (Date.now() < deadline) {
+    lastStatus = await readPowerSyncStatus(page)
+    if (lastStatus && typeof lastStatus === 'object') {
+      const downloadError = (lastStatus as { downloadError?: Record<string, unknown> | null }).downloadError ?? null
+      if (downloadError && typeof downloadError === 'object') {
+        console.log('[live-cli] PowerSync downloadError snapshot:', downloadError)
+      }
+    }
+    const isConnected = Boolean(lastStatus && typeof lastStatus === 'object' && (lastStatus as { connected?: unknown }).connected)
+    if (isConnected) {
+      return lastStatus
+    }
+    await page.waitForTimeout(intervalMs)
+  }
+  throw new Error(
+    `PowerSync did not report connected=true within ${timeoutMs}ms. Last observed status: ${JSON.stringify(lastStatus)}`,
+  )
+}
+
 test.describe('CLI-seeded repo (live PowerSync)', () => {
   let supabaseEmail: string
   let supabasePassword: string
   let daemonBaseUrl: string
   let orgId: string
   let repoId: string
-  let repoFixture: RepoFixturePayload | null = null
+  let expectedBranches: DaemonBranch[] = []
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
-      ;(window as typeof window & { __powersyncForceEnable?: boolean; __powersyncUseFixturesOverride?: boolean }).__powersyncForceEnable =
-        true
-      ;(
-        window as typeof window & { __powersyncForceEnable?: boolean; __powersyncUseFixturesOverride?: boolean }
-      ).__powersyncUseFixturesOverride = true
+      const globalWindow = window as typeof window & {
+        __powersyncForceEnable?: boolean
+        __powersyncUseFixturesOverride?: boolean
+        __skipSupabaseMock?: boolean
+      }
+      globalWindow.__powersyncForceEnable = true
+      globalWindow.__powersyncUseFixturesOverride = false
+      globalWindow.__skipSupabaseMock = true
     })
   })
 
@@ -174,13 +260,14 @@ test.describe('CLI-seeded repo (live PowerSync)', () => {
     runCliCommand(['demo-seed'], 'seed demo repository')
     await waitForRepoSeed(daemonBaseUrl, orgId, repoId, WAIT_TIMEOUT_MS)
 
-    repoFixture = await fetchRepoFixture(daemonBaseUrl, orgId, repoId)
-    if (!repoFixture.branches || repoFixture.branches.length === 0) {
-      throw new Error(`Daemon returned no refs for ${orgId}/${repoId}`)
+    expectedBranches = await fetchDaemonBranches(daemonBaseUrl, orgId, repoId)
+    if (!expectedBranches.length) {
+      throw new Error(`Daemon returned no head refs for ${orgId}/${repoId}`)
     }
   })
 
   test('explorer shows CLI-seeded data', async ({ page }) => {
+    test.setTimeout(WAIT_TIMEOUT_MS)
     await page.goto(`${BASE_URL}/auth`)
     await expect(page.getByTestId('auth-heading')).toBeVisible()
 
@@ -192,39 +279,116 @@ test.describe('CLI-seeded repo (live PowerSync)', () => {
 
     await page.goto(`${BASE_URL}/org/${orgId}/repo/${repoId}/branches`)
     await expect(page.getByText(new RegExp(`Branches \\(${orgId}/${repoId}\\)`))).toBeVisible({ timeout: WAIT_TIMEOUT_MS })
-    if (repoFixture) {
-      await page.waitForFunction(
-        () =>
-          typeof (window as typeof window & {
-            __powersyncSetRepoFixture?: unknown
-          }).__powersyncSetRepoFixture === 'function',
-        null,
-        { timeout: WAIT_TIMEOUT_MS }
-      )
-      await page.evaluate(() => {
-        const global = window as typeof window & {
-          __powersyncSetRepoFixture?: unknown
-        }
-        if (typeof global.__powersyncSetRepoFixture !== 'function') {
-          throw new Error('Fixture setter unavailable on window')
-        }
-      })
-      await page.evaluate((fixture) => {
-        const global = window as typeof window & {
-          __powersyncClearRepoFixtures?: () => void
-          __powersyncSetRepoFixture?: (payload: RepoFixturePayload) => void
-        }
-        global.__powersyncClearRepoFixtures?.()
-        global.__powersyncSetRepoFixture?.(fixture)
-      }, repoFixture)
-      await page.waitForFunction(
-        () => document.querySelectorAll('ul.space-y-1 li').length > 0,
-        null,
-        { timeout: WAIT_TIMEOUT_MS }
+    const powerSyncStatus = await readPowerSyncStatus(page)
+    console.log('[live-cli] PowerSync status snapshot:', powerSyncStatus)
+    const failFastTimeout = Math.min(FAIL_FAST_TIMEOUT_MS, WAIT_TIMEOUT_MS)
+    const connectedStatus = await waitForPowerSyncConnected(page, failFastTimeout, WAIT_INTERVAL_MS)
+    console.log('[live-cli] PowerSync connected snapshot:', connectedStatus)
+    const powerSyncDbKeys = await page.evaluate(() => {
+      const global = window as typeof window & { __powersyncDb?: Record<string, unknown> }
+      if (!global.__powersyncDb) return null
+      return Object.keys(global.__powersyncDb)
+    })
+    console.log('[live-cli] PowerSync db keys:', powerSyncDbKeys)
+    const powerSyncRefs = await page.evaluate(async () => {
+      const global = window as typeof window & {
+        __powersyncDb?: { getAll?: (sql: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>> }
+      }
+      const db = global.__powersyncDb
+      if (!db || typeof db.getAll !== 'function') {
+        return null
+      }
+      const tables = await db.getAll("SELECT name FROM sqlite_master WHERE type = 'table'")
+    const refsRows = await db.getAll('SELECT name, target_sha, org_id, repo_id FROM refs')
+    let rawRefs: Array<Record<string, unknown>> | { error: string } | null = null
+    try {
+      rawRefs = await db.getAll('SELECT id, org_id, repo_id, name, target_sha FROM raw_refs')
+    } catch (error) {
+      rawRefs = { error: error instanceof Error ? error.message : String(error) }
+    }
+    let psDataRefs: Array<Record<string, unknown>> | { error: string } | null = null
+    let psDataRefsInfo: Array<Record<string, unknown>> | { error: string } | null = null
+    let untypedRefs: Array<Record<string, unknown>> | { error: string } | null = null
+    try {
+      psDataRefs = await db.getAll('SELECT id, data FROM ps_data__refs')
+    } catch (error) {
+      psDataRefs = { error: error instanceof Error ? error.message : String(error) }
+    }
+    try {
+      psDataRefsInfo = await db.getAll("PRAGMA table_info('ps_data__refs')")
+    } catch (error) {
+      psDataRefsInfo = { error: error instanceof Error ? error.message : String(error) }
+    }
+    try {
+      untypedRefs = await db.getAll("SELECT id, type, json_extract(data, '$.name') AS name FROM ps_untyped WHERE type = 'refs'")
+    } catch (error) {
+      untypedRefs = { error: error instanceof Error ? error.message : String(error) }
+    }
+      return {
+        refs: refsRows,
+        raw_refs: rawRefs,
+        ps_data_refs: psDataRefs,
+        ps_data_refs_info: psDataRefsInfo,
+        ps_untyped_refs: untypedRefs,
+        tables,
+      }
+    })
+    console.log('[live-cli] PowerSync refs query:', powerSyncRefs)
+    const branchItems = page.locator('ul.space-y-1 li')
+    await page.waitForFunction(
+      (names) => {
+        const items = Array.from(document.querySelectorAll('ul.space-y-1 li'))
+        return names.every((name) => items.some((item) => item.textContent?.includes(name)))
+      },
+      expectedBranches.map((branch) => branch.name ?? ''),
+      { timeout: failFastTimeout }
+    )
+    const branchCount = await branchItems.count()
+    if (branchCount < expectedBranches.length) {
+      throw new Error(
+        `Expected at least ${expectedBranches.length} branch rows but saw ${branchCount}. Branch locator snapshot: ${await branchItems.allTextContents()}`
       )
     }
+    for (const branch of expectedBranches) {
+      const matchingRow = branchItems.filter({ hasText: branch.name ?? '' }).first()
+      await expect(matchingRow).toBeVisible()
+      const shaCell = matchingRow.locator('span.font-mono')
+      if (branch.targetSha) {
+        await expect(shaCell).toContainText(branch.targetSha.slice(0, 7))
+      } else {
+        await expect(shaCell).toContainText('—')
+      }
+    }
+
+    const fixtureStore = await page.evaluate(
+      ({ org, repo }) => {
+        const global = window as typeof window & {
+          __powersyncGetRepoFixtures?: () => Record<string, unknown>
+        }
+        if (typeof global.__powersyncGetRepoFixtures !== 'function') {
+          return null
+        }
+        return global.__powersyncGetRepoFixtures()?.[`${org}::${repo}`] ?? null
+      },
+      { org: orgId, repo: repoId }
+    )
+    expect(fixtureStore).toBeNull()
 
     await page.goto(`${BASE_URL}/org/${orgId}/repo/${repoId}/commits`)
     await expect(page.getByText(new RegExp(`Commits \\(${orgId}/${repoId}\\)`))).toBeVisible({ timeout: WAIT_TIMEOUT_MS })
+    const commitItems = page.locator('ul.space-y-2 li')
+    await page.waitForFunction(
+      () => {
+        return Array.from(document.querySelectorAll('ul.space-y-2 li')).some((item) =>
+          item.textContent?.includes('Import demo template content')
+        )
+      },
+      undefined,
+      { timeout: failFastTimeout }
+    )
+    const seededCommitRow = commitItems.filter({ hasText: 'Import demo template content' }).first()
+    await expect(seededCommitRow).toBeVisible()
+    await expect(seededCommitRow).toContainText('PowerSync Seed Bot')
+    await expect(seededCommitRow.locator('span.font-mono')).not.toContainText('———')
   })
 })

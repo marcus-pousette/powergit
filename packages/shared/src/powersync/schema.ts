@@ -10,7 +10,6 @@ export type PowerSyncSchemaSpec = Record<string, PowerSyncTableSpec>
 const rawPowerSyncSchemaSpec = {
   refs: {
     columns: {
-      id: 'text',
       org_id: 'text',
       repo_id: 'text',
       name: 'text',
@@ -18,14 +17,12 @@ const rawPowerSyncSchemaSpec = {
       updated_at: 'text',
     },
     indexes: {
-      id: ['id'],
       org_repo: ['org_id', 'repo_id'],
       name: ['name'],
     },
   },
   commits: {
     columns: {
-      id: 'text',
       org_id: 'text',
       repo_id: 'text',
       sha: 'text',
@@ -36,14 +33,12 @@ const rawPowerSyncSchemaSpec = {
       tree_sha: 'text',
     },
     indexes: {
-      id: ['id'],
       org_repo: ['org_id', 'repo_id'],
       author: ['author_email'],
     },
   },
   file_changes: {
     columns: {
-      id: 'text',
       org_id: 'text',
       repo_id: 'text',
       commit_sha: 'text',
@@ -52,14 +47,12 @@ const rawPowerSyncSchemaSpec = {
       deletions: 'integer',
     },
     indexes: {
-      id: ['id'],
       org_repo: ['org_id', 'repo_id'],
       path: ['path'],
     },
   },
   objects: {
     columns: {
-      id: 'text',
       org_id: 'text',
       repo_id: 'text',
       pack_oid: 'text',
@@ -67,7 +60,6 @@ const rawPowerSyncSchemaSpec = {
       created_at: 'text',
     },
     indexes: {
-      id: ['id'],
       org_repo_created: ['org_id', 'repo_id', 'created_at'],
       pack_oid: ['pack_oid'],
     },

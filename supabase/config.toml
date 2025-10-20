@@ -33,6 +33,9 @@ shadow_port = 55430
 # server_version;` on the remote database to check.
 major_version = 17
 
+# Custom schema filtering is handled per-command (e.g. `supabase db pull --schema public`).
+
+
 [db.pooler]
 enabled = false
 # Port to use for the local connection pooler.

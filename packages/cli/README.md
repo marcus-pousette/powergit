@@ -102,7 +102,7 @@ psgit sync
 
 - `--remote` / `-r` – pick a non-default remote name (defaults to `origin` or `REMOTE_NAME` env var).
 
-The command ensures the daemon is running (starting it if auto-start is enabled), reuses the cached credentials from `psgit login`, and makes a lightweight RPC call to the daemon. The daemon responds with counts derived from its raw tables, so the CLI no longer creates or maintains its own SQLite database file.
+The command ensures the daemon is running (starting it if auto-start is enabled), reuses the cached credentials from `psgit login`, and makes a lightweight RPC call to the daemon. The daemon responds with counts derived from its PowerSync tables (`refs`, `commits`, `file_changes`, `objects`), so the CLI no longer creates or maintains its own SQLite database file.
 
 > **When do I need Docker Compose?**
 >

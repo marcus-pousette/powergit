@@ -49,7 +49,7 @@ Detailed breakdown:
    supabase db push
    ```
 
-   This applies the SQL migration under `supabase/migrations/20241007090000_powersync_git_tables.sql`, provisioning the `refs`, `commits`, `file_changes`, and `git_packs` tables required by both the CLI and explorer.
+   This applies the SQL migrations under `supabase/migrations`, provisioning the `refs`, `commits`, `file_changes`, and `objects` tables required by both the CLI and explorer.
 
 4. **Start the local services** (Supabase API, Postgres, PowerSync daemon) in one terminal:
 
@@ -148,9 +148,9 @@ VITE_SUPABASE_SCHEMA=public
 VITE_POWERSYNC_DISABLED=false
 ```
 
-### PowerSync raw tables
+### PowerSync tables
 
-- PowerSync stores sync data locally in SQLite tables (`raw_refs`, `raw_commits`, `raw_file_changes`, `raw_objects`) that mirror the org-scoped streams.
+- PowerSync stores sync data locally in SQLite tables (`refs`, `commits`, `file_changes`, `objects`) that mirror the org-scoped streams.
 - Inspect daemon state via CLI commands (`psgit sync`) or the Supabase writer rather than maintaining a separate CLI-managed SQLite file.
 
 ### Supabase + PowerSync backend

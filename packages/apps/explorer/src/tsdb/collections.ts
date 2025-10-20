@@ -2,8 +2,8 @@
 import * as React from 'react'
 import { createCollection, type CollectionImpl } from '@tanstack/db'
 import { usePowerSync } from '@powersync/react'
-import { convertPowerSyncSchemaToSpecs, powerSyncCollectionOptions } from '@tanstack/powersync-db-collection'
-import { AppSchema, type Database } from '../ps/schema'
+import { powerSyncCollectionOptions } from '@tanstack/powersync-db-collection'
+import { AppSchema, collectionSpecs, type Database } from '../ps/schema'
 
 type Collections = {
   refs: CollectionImpl<Database['refs']>
@@ -11,8 +11,6 @@ type Collections = {
   file_changes: CollectionImpl<Database['file_changes']>
   objects: CollectionImpl<Database['objects']>
 }
-
-const collectionSpecs = convertPowerSyncSchemaToSpecs(AppSchema)
 
 export function useCollections(): Collections {
   const db = usePowerSync()

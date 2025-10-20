@@ -158,6 +158,32 @@ function firstNonEmpty(...candidates: Array<string | null | undefined>): string 
   return undefined
 }
 
+function parseJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.')
+  if (parts.length < 2) return null
+  try {
+    const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = Buffer.from(normalized, 'base64').toString('utf8')
+    const payload = JSON.parse(json)
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function tokenHasIatClaim(token: string): boolean {
+  const payload = parseJwtPayload(token)
+  if (!payload) return false
+  const value = payload.iat
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0
+  }
+  return false
+}
+
 function inferGuestTokenFromEnv(): { token: string; source: string } | null {
   const sources: Array<{ key: string; value: string | undefined }> = [
     { key: 'POWERSYNC_DAEMON_GUEST_TOKEN', value: process.env.POWERSYNC_DAEMON_GUEST_TOKEN },
@@ -187,13 +213,25 @@ async function resolveGuestCredentials(args: LoginCommandArgs): Promise<Resolved
     }
   }
 
+  const endpointHint = firstNonEmpty(
+    args.endpoint,
+    process.env.POWERSYNC_ENDPOINT,
+    process.env.PSGIT_TEST_ENDPOINT,
+    process.env.POWERSYNC_DAEMON_ENDPOINT,
+    process.env.POWERSYNC_ENDPOINT,
+  )
+
   const envToken = inferGuestTokenFromEnv()
   if (envToken) {
-    return {
-      token: envToken.token,
-      endpoint: args.endpoint,
-      source: 'env',
-      metadata: { source: envToken.source },
+    if (!tokenHasIatClaim(envToken.token)) {
+      console.warn(`[psgit] Skipping ${envToken.source} guest token: missing 'iat' claim.`)
+    } else {
+      return {
+        token: envToken.token,
+        endpoint: endpointHint,
+        source: 'env',
+        metadata: { source: envToken.source },
+      }
     }
   }
 
@@ -201,7 +239,7 @@ async function resolveGuestCredentials(args: LoginCommandArgs): Promise<Resolved
   const supabaseAnonKey = firstNonEmpty(args.supabaseAnonKey, process.env.POWERSYNC_SUPABASE_ANON_KEY, process.env.PSGIT_TEST_SUPABASE_ANON_KEY, process.env.SUPABASE_ANON_KEY)
   const supabaseEmail = firstNonEmpty(args.supabaseEmail, process.env.POWERSYNC_SUPABASE_EMAIL, process.env.PSGIT_TEST_SUPABASE_EMAIL)
   const supabasePassword = firstNonEmpty(args.supabasePassword, process.env.POWERSYNC_SUPABASE_PASSWORD, process.env.PSGIT_TEST_SUPABASE_PASSWORD)
-  const endpoint = firstNonEmpty(args.endpoint, process.env.POWERSYNC_ENDPOINT, process.env.PSGIT_TEST_ENDPOINT)
+  const endpoint = endpointHint
 
   if (supabaseUrl && supabaseAnonKey && supabaseEmail && supabasePassword && endpoint) {
     try {

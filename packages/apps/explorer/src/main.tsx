@@ -14,12 +14,20 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   ;(window as typeof window & { __appRouter?: typeof router }).__appRouter = router
 }
 
+const app = (
+  <SupabaseAuthProvider>
+    <PowerSyncProvider>
+      <RouterProvider router={router} />
+    </PowerSyncProvider>
+  </SupabaseAuthProvider>
+)
+
+const root = import.meta.env.VITE_DISABLE_STRICT_MODE === 'true' ? (
+  app
+) : (
+  <React.StrictMode>{app}</React.StrictMode>
+)
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <SupabaseAuthProvider>
-      <PowerSyncProvider>
-        <RouterProvider router={router} />
-      </PowerSyncProvider>
-    </SupabaseAuthProvider>
-  </React.StrictMode>,
+  root,
 )

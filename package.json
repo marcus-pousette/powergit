@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r run build",
     "dev": "pnpm --filter @app/explorer dev",
+    "dev:prod": "pnpm --filter @app/explorer dev:prod",
     "dev:stack": "node ./scripts/dev-local-stack.mjs",
     "dev:stack:up": "node ./scripts/dev-stack-up.mjs",
     "dev:stack:down": "node ./scripts/dev-stack-down.mjs",
@@ -18,21 +19,30 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
     "test:e2e": "pnpm --filter @app/explorer test:e2e",
-    "live:validate": "node ./scripts/run-live-validation.mjs"
+    "live:validate": "node ./scripts/run-live-validation.mjs",
+    "prod:supabase:link": "pnpx supabase link",
+    "prod:supabase:status": "pnpx supabase status",
+    "prod:supabase:db:push": "pnpx supabase db push",
+    "prod:supabase:db:pull": "pnpx supabase db pull",
+    "prod:supabase:db:reset": "pnpx supabase db reset",
+    "prod:supabase:start": "pnpx supabase start",
+    "prod:supabase:stop": "pnpx supabase stop",
+    "prod:migrate": "pnpx supabase db push",
+    "prod:migrate:reset": "pnpx supabase db reset"
   },
   "pnpm": {
     "overrides": {
       "@tanstack/db": "workspace:*",
       "@tanstack/react-db": "workspace:*",
       "@tanstack/powersync-db-collection": "workspace:*",
-      "@powersync/common": "0.0.0-dev-20251003085035",
-      "@powersync/node": "0.0.0-dev-20251003085035",
-      "@powersync/web": "0.0.0-dev-20251003085035",
-      "@powersync/react": "0.0.0-dev-20251003085035"
+      "@powersync/common": "1.40.0",
+      "@powersync/node": "0.11.1",
+      "@powersync/web": "1.27.1",
+      "@powersync/react": "1.8.1"
     },
     "peerDependencyRules": {
       "allowedVersions": {
-        "@powersync/common": ">=1.39.0 || =0.0.0-dev-20251003085035"
+        "@powersync/common": ">=1.40.0"
       }
     },
     "onlyBuiltDependencies": [
@@ -42,7 +52,11 @@
       "@swc/core",
       "better-sqlite3",
       "esbuild"
-    ]
+    ],
+    "patchedDependencies": {
+      "@powersync/web": "patches/@powersync__web.patch",
+      "@powersync/node": "patches/@powersync__node.patch"
+    }
   },
   "devDependencies": {
     "@pkg/remote-helper": "workspace:*",

@@ -1,5 +1,29 @@
 # PowerSync-First Architecture Roadmap
 
+## Active Focus (2025-10-21)
+- Raw tables are only partially migrated: `persistPush` no longer assigns stable `id` values (see `packages/daemon/src/queries.ts`) even though `supabase/schema.sql` and `RAW_TABLE_SPECS` still declare `id TEXT PRIMARY KEY`. Every daemon insert will violate the NOT NULL constraint. Decide whether to 1) restore the `refId`/`commitId`/`fileChangeId` helpers and keep single-column PKs, or 2) finish the composite-key migration (update schema specs, Supabase writer conflict targets, triggers, migrations, and PowerSync rules) before shipping anything else.
+- `ensureLocalSchema` is currently unused in the daemon bootstrap and the Supabase writer loop is never started. Without the triggers or the poller, mutations never flow into `powersync_crud`, so Supabase never sees Git updates and replicas stay empty.
+- Stream orchestration needs a refresh: the explorer and sync rules now pass `{ org_id, repo_id }` parameters for each stream, but the daemon server still exposes plain string lists and `startDaemon` doesn’t wire `subscribeStreams`/`unsubscribeStreams`. Git helper / CLI can’t resubscribe, leaving raw tables empty client-side.
+- Rebuilt the PowerSync core (wasm + macos dylib) so `powersync_disable_drop_view()` is registered; the patched `@powersync/{web,node}` packages now bundle the updated binaries and the drop helper only no-ops when the flag is set.
+- Explorer e2e (`live-cli.spec.ts`) now seeds via the daemon; manual browser runs show refs/commits rendering once the patched core is active. Playwright still flakes because the control plane occasionally serves empty buckets, so shepherding real data through PowerSync remains a follow-up.
+- Explorer bootstrap runs `SELECT powersync_disable_drop_view()` before the raw-table migration and the patched core honours it (drop helper becomes a no-op). We injected the rebuilt wasm/dylib via `patches/@powersync__web.patch` and `patches/@powersync__node.patch`; the patches include:
+  - `powersync_drop_view` short-circuits when the flag is set.
+  - The disable function is exported/registered inside the extension.
+  - Browser + daemon both take the dependency through the pnpm patch pipeline.
+- Reapplying the patched binaries workflow: `pnpm patch @powersync/web` → copy `third_party/powersync-sqlite-core/libpowersync*.wasm` into `dist/` → `pnpm patch-commit ...` (repeat for `@powersync/node` with the dylib/static lib) → `pnpm install --force` → restart Vite/daemon so the new `@powersync/web` symlink refreshes (it should point at a patch hash whose wasm contains `powersync_disable_drop_view`).
+- Dev stack bootstrap now writes `POWERSYNC_DAEMON_ENDPOINT`/`POWERSYNC_DAEMON_TOKEN` to `.env.powersync-stack`; source that file (or export both vars) before running CLI live tests so the daemon auto-start retains credentials.
+- Remaining sync gaps are upstream (PowerSync service still needs to populate control-plane tables); once the service streams bucket snapshots, the Playwright suite should match manual results.
+- Live Playwright spec now fails fast if PowerSync stays disconnected for ~20s (tunable via `POWERSYNC_E2E_FAIL_FAST_MS`) so iteration remains quick while we stabilise the backend.
+- Branch assertions in the live CLI e2e now cap wait time at the same fail-fast window (20s by default) so we bail quickly when branches never arrive instead of sitting on the full 5‑minute test timeout.
+- Added diagnostics fixture guard that bails as soon as Vite logs “server connection lost” or the browser sees `ERR_CONNECTION_REFUSED`, so e2e runs stop immediately when the dev server dies instead of idling until the overall timeout.
+- Stream subscription guard suppresses “database is closing” noise, but currently swallows *all* `cannot acquire lock` errors. Tighten the check so real contention still surfaces; confirm the provider lifecycle never leaves hooks mounted with zero subscriptions.
+- Supabase mock is skipped for live tests via `__skipSupabaseMock`; ensure future auth tweaks keep this flag in mind.
+- Next steps: 1) instrument `statusChanged` to capture sync lifecycle, 2) verify browser makes a `/streams` websocket to the PowerSync endpoint with the daemon-issued token, 3) cross-check daemon `/streams` subscriptions while UI is open, 4) once sync connects, rerun the live e2e to ensure branches/commits render end-to-end.
+- Added a guarded migration that drains `ps_untyped` into the concrete Git tables (using `RAW_TABLE_SPECS`) so existing browser replicas upgrade automatically; migration logs are dev-only and tolerate missing tables. Typecheck run still fails with pre-existing explorer errors (`powersync.tsx` typing + missing `VaultScreen` export).
+- Investigated `third_party/react-supabase-chat-e2ee`'s `SystemProvider`: it builds a `PowerSyncDatabase` with the standard `@powersync/web` Rust client, layers Supabase auth via a `TokenConnector`, and installs/enforces encrypted table DDL with `ensurePairsDDL`; it still traps `powersync_drop_view` errors by clearing the local DB rather than bypassing the runtime logic.
+- Confirmed the workspace now targets `@powersync/{common,web,react,node}` release builds (see package overrides) instead of the previous dev snapshot so we align with the sample chat app’s raw-table support.
+- Added a kill switch in `third_party/powersync-sqlite-core` (`powersync_disable_drop_view()`) that skips the drop-view helper, registered it in the extension, rebuilt the wasm/dylib, and patched `@powersync/{web,node}` again. Explorer now calls `SELECT powersync_disable_drop_view()` before raw-table migration so we can toggle the new behavior without rebuilding upstream.
+
 ## Vision
 Create a development experience where every component—CLI, explorer, background jobs—operates purely through PowerSync replicas. Supabase and object storage are written through the daemon’s integrated bridge layer (running locally for dev and configurable for shared environments), so no developer tooling ever needs direct credentials.
 
@@ -13,7 +37,7 @@ Create a development experience where every component—CLI, explorer, backgroun
 ---
 
 ## Agent Notes (2025-10-08)
-- Pinned workspace to `@powersync/common|node|web|react@0.0.0-dev-20251003085035` and used `pnpm.peerDependencyRules.allowedVersions` so the TanStack adapter peer constraint stays satisfied without modifying the submodule; added direct deps where needed for peer compliance.
+- Pinned workspace to `@powersync/common@1.40.0`, `@powersync/web@1.27.1`, `@powersync/react@1.8.1`, and `@powersync/node@0.11.1`, updating the peer rule to `>=1.40.0` so TanStack adapter stays compliant without editing the submodule.
 - Added automatic PowerSync env injection in `scripts/dev-local-stack.mjs` so `pnpm dev:stack` exports `PS_*`/`POWERSYNC_*` values needed by the config parser and seeding. Verified via `node scripts/dev-local-stack.mjs --dry-run --print-exports`.
 - Tightened `pnpm dev:stack` error handling so workspace builds and seed steps fail fast instead of logging warnings. Verified command now exits once `@pkg/cli` build fails on missing `objects` key.
 - Removed the Supabase `powersync-push` function and demo seeding hook from `pnpm dev:stack`; docs/scripts now stop short of pushing sample commits until the daemon-backed flow replaces it.
@@ -67,6 +91,7 @@ Create a development experience where every component—CLI, explorer, backgroun
 - Raw Git tables now carry PowerSync-managed triggers that forward local mutations into `powersync_crud`, and the daemon drains those CRUD batches straight into Supabase right after each push (keeping the upload handler path ready for future integration) (`packages/daemon/src/local-schema.ts`, `packages/daemon/src/index.ts`, `packages/daemon/src/supabase-writer.ts`).
 - Follow-up: once PowerSync’s `uploadHandler` fires for raw-table triggers automatically, drop the explicit `supabaseWriter.uploadPending()` call and rely on the handler (or move the logic there). Keep an eye on upstream SDK updates before refactoring.
 - Playwright live UI spec (`tests/e2e/live-cli.spec.ts`) still relies on the fixture bridge/mocked Supabase client even though the daemon mirrors data in real time. Future improvement: run that scenario against the real Supabase API (log in with seeded user/service key, wait for daemon sync) so the browser exercise matches production wiring.
+- Frontend live e2e still depends on mock Supabase + fixture bridge — need a plan to authenticate the browser against the real Supabase instance, wait for daemon streams to catch up, and assert actual branch/commit rows without injecting fixtures.
 
 ## Agent Notes (2025-10-21)
 - Removed the passphrase gate from the explorer; sign-in now lands directly on the overview without additional setup screens (`packages/apps/explorer/src/main.tsx`, `packages/apps/explorer/src/routes/__root.tsx`, `packages/apps/explorer/src/routes/auth.tsx`).
@@ -268,3 +293,14 @@ With this, we hit the “maximum PowerSync” goal: every mutation flows through
 - Added daemon-side stream subscription manager with `/streams` list/subscribe/unsubscribe routes plus unit coverage to lock the contract.
 - Refreshed CLI e2e to delete existing subscriptions, run `psgit sync`, and assert the daemon re-subscribes before verifying that a second working copy observes new refs via streaming.
 - Remote helper git e2e now checks the daemon’s stream inventory after a push; Supabase propagation can still be slow locally (~60s). Vitest run spins up the stack correctly but timed out waiting for Supabase to surface the updated ref—rerun once supabase latency is understood or bump wait budget.
+
+## Agent Notes (2025-10-21)
+- Wrapped `useRepoStreams` subscriptions with a guard for PowerSync “database is closing” errors so tests stop logging noisy console failures during teardown.
+- Live Playwright spec still fails waiting for branch rows; investigate why PowerSync collections stay empty after `psgit demo-seed` (likely stream replication delay or missing repo subscription).
+
+## Agent Notes (2025-10-22)
+- Dropped the Supabase view layer—`refs/commits/file_changes/objects` are now the physical tables, with a migration to rename the former `raw_*` tables and retarget indexes. Update RLS to operate on the renamed tables and refresh the PowerSync config to read from them directly.
+- For local-only workflows we removed the legacy `DROP TABLE IF EXISTS` guards from `20251017053407_schema.sql`; migrations now assume a clean baseline. Reintroduce defensive drops if you start sharing the schema across environments.
+- Deleted Supabase’s automatic `20251017055214_remote_schema.sql` snapshot so future pulls won’t drag in Storage triggers we don’t use.
+- PowerSync config now references `sync-rules.yaml`; sync rule SQL lives beside the config file and the seeding script tolerates `sync_rules.path` (skips inline seeding when rules are external).
+- Explorer mitigates `powersync_drop_view` schema mismatches by clearing the local PowerSync DB, rerunning the raw-table migration, and reconnecting automatically (mirrors the E2EE chat example’s recovery flow).

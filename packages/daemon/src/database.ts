@@ -65,20 +65,7 @@ export async function createPowerSyncDatabase(options: CreateDatabaseOptions): P
     },
   });
 
-  let resetOnce = false;
-  while (true) {
-    try {
-      await database.init();
-      break;
-    } catch (error) {
-      if (resetOnce) {
-        throw error;
-      }
-      resetOnce = true;
-      await database.close({ disconnect: true }).catch(() => undefined);
-      await removeLocalReplica(options.dbPath).catch(() => undefined);
-    }
-  }
+  await database.init();
   return database;
 }
 
@@ -88,10 +75,7 @@ export async function connectWithSchemaRecovery(
 ): Promise<void> {
   while (true) {
     try {
-      await database.connect(connector, {
-        clientImplementation: SyncClientImplementation.RUST,
-        includeDefaultStreams,
-      });
+      await database.connect(connector, { clientImplementation: SyncClientImplementation.RUST, includeDefaultStreams });
       await database.waitForReady();
       return;
     } catch (error) {

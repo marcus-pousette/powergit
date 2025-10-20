@@ -3,9 +3,6 @@ import type { AddressInfo } from 'node:net';
 import busboy from 'busboy';
 import type { GitPushSummary, RefRow, RepoSummaryRow } from '@shared/core';
 import type { PersistPushResult, PushUpdateRow } from './queries.js';
-import type { AuthStatusPayload } from './auth/index.js';
-
-export type DaemonAuthResponse = AuthStatusPayload & { httpStatus?: number };
 
 export interface DaemonStatusSnapshot {
   startedAt: string;
@@ -14,32 +11,56 @@ export interface DaemonStatusSnapshot {
   streamCount: number;
 }
 
-export interface DaemonCorsOptions {
-  origins?: string | string[];
-  allowMethods?: string[];
+export interface DaemonAuthResponse {
+  status: string;
+  token?: string;
+  reason?: string;
+  httpStatus?: number;
+  expiresAt?: string | null;
+  context?: Record<string, unknown> | null;
+}
+
+export interface SubscribeStreamsResult {
+  added: string[];
+  alreadyActive: string[];
+  queued: string[];
+}
+
+export interface UnsubscribeStreamsResult {
+  removed: string[];
+  notFound: string[];
+}
+
+export interface StreamSubscriptionTarget {
+  id: string;
+  parameters?: Record<string, unknown> | null;
+}
+
+export interface DaemonServerCorsOptions {
+  origins?: string[];
   allowHeaders?: string[];
+  allowMethods?: string[];
   allowCredentials?: boolean;
-  maxAgeSeconds?: number;
 }
 
 export interface DaemonServerOptions {
   host: string;
   port: number;
   getStatus: () => DaemonStatusSnapshot;
-  getAuthStatus?: () => AuthStatusPayload;
   onShutdownRequested?: () => Promise<void> | void;
-  handleAuthGuest?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
-  handleAuthDevice?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
-  handleAuthLogout?: () => Promise<DaemonAuthResponse>;
   fetchRefs?: (params: { orgId: string; repoId: string; limit?: number }) => Promise<RefRow[]>;
   listRepos?: (params: { orgId: string; limit?: number }) => Promise<RepoSummaryRow[]>;
+  getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
   pushPack?: (params: { orgId: string; repoId: string; payload: DaemonPushRequest }) => Promise<DaemonPushResponse>;
-  getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
-  listStreams?: () => string[];
-  subscribeStreams?: (streamIds: string[]) => Promise<{ added: string[]; alreadyActive: string[]; queued?: string[] }>;
-  unsubscribeStreams?: (streamIds: string[]) => Promise<{ removed: string[]; notFound: string[] }>;
-  cors?: DaemonCorsOptions;
+  getAuthStatus?: () => DaemonAuthResponse | Promise<DaemonAuthResponse>;
+  handleAuthGuest?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
+  handleAuthDevice?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
+  handleAuthLogout?: (payload: Record<string, unknown> | null) => Promise<DaemonAuthResponse>;
+  listStreams?: () => Promise<string[]> | string[];
+  subscribeStreams?: (streams: StreamSubscriptionTarget[]) => Promise<SubscribeStreamsResult> | SubscribeStreamsResult;
+  unsubscribeStreams?: (streams: StreamSubscriptionTarget[]) => Promise<UnsubscribeStreamsResult> | UnsubscribeStreamsResult;
+  cors?: DaemonServerCorsOptions;
 }
 
 export interface DaemonServer {
@@ -74,61 +95,6 @@ async function readJsonBody<T = unknown>(req: http.IncomingMessage): Promise<T |
   }
 }
 
-function parseStreamList(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  const unique = new Set<string>();
-  for (const candidate of input) {
-    if (typeof candidate !== 'string') continue;
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-    unique.add(trimmed);
-  }
-  return Array.from(unique);
-}
-
-function resolveAuthStatusCode(payload: DaemonAuthResponse, fallback = 200): number {
-  if (typeof payload.httpStatus === 'number' && Number.isFinite(payload.httpStatus) && payload.httpStatus > 0) {
-    return Math.floor(payload.httpStatus);
-  }
-  switch (payload.status) {
-    case 'ready':
-      return fallback;
-    case 'pending':
-      return 202;
-    case 'auth_required':
-      return 401;
-    case 'error':
-      return 400;
-    default:
-      return fallback;
-  }
-}
-
-function toAuthStatusPayload(payload: DaemonAuthResponse): AuthStatusPayload {
-  const { httpStatus, ...rest } = payload;
-  return rest;
-}
-
-function normalizeCorsOrigins(origins?: string | string[] | null): '*' | string[] {
-  if (!origins || (Array.isArray(origins) && origins.length === 0)) {
-    return '*';
-  }
-  if (typeof origins === 'string') {
-    const trimmed = origins.trim();
-    if (!trimmed) return '*';
-    if (trimmed === '*') return '*';
-    return [trimmed];
-  }
-  const normalized = origins
-    .map((origin) => origin?.trim())
-    .filter((origin): origin is string => Boolean(origin && origin !== '*'));
-  return normalized.length === 0 ? '*' : Array.from(new Set(normalized));
-}
-
-function formatHeaderList(values: string[]): string {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).join(', ');
-}
-
 export interface DaemonPackResponse {
   packBase64: string;
   encoding?: string;
@@ -148,363 +114,346 @@ export interface DaemonPushRequest {
 
 export type DaemonPushResponse = PersistPushResult & { message?: string };
 
+function allowedMethodsForPath(pathname: string, options: DaemonServerOptions): string[] | null {
+  switch (pathname) {
+    case '/auth/status':
+      return options.getAuthStatus ? ['GET'] : null;
+    case '/auth/guest':
+      return options.handleAuthGuest ? ['POST'] : null;
+    case '/auth/device':
+      return options.handleAuthDevice ? ['POST'] : null;
+    case '/auth/logout':
+      return options.handleAuthLogout ? ['POST'] : null;
+    case '/streams':
+      return ['GET', 'POST', 'DELETE'];
+    default:
+      return null;
+  }
+}
+
+function sanitizeStreamParameters(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result: Record<string, unknown> = {};
+  for (const rawKey of Object.keys(value)) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    const raw = (value as Record<string, unknown>)[rawKey];
+    if (raw === undefined) continue;
+    if (raw === null) {
+      result[key] = null;
+      continue;
+    }
+    if (typeof raw === 'string') {
+      const trimmedValue = raw.trim();
+      result[key] = trimmedValue.length > 0 ? trimmedValue : raw;
+      continue;
+    }
+    if (typeof raw === 'number' || typeof raw === 'boolean') {
+      result[key] = raw;
+      continue;
+    }
+    result[key] = String(raw);
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function sanitizeStreams(value: unknown): StreamSubscriptionTarget[] {
+  if (!Array.isArray(value)) return [];
+  const streams: StreamSubscriptionTarget[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      const id = entry.trim();
+      if (id.length > 0) {
+        streams.push({ id });
+      }
+      continue;
+    }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const candidate = entry as { id?: unknown; stream?: unknown; parameters?: unknown; params?: unknown };
+      const idSource =
+        typeof candidate.id === 'string'
+          ? candidate.id
+          : typeof candidate.stream === 'string'
+            ? candidate.stream
+            : '';
+      const id = idSource.trim();
+      if (!id) continue;
+      const parameters = sanitizeStreamParameters(candidate.parameters ?? candidate.params ?? null);
+      streams.push({ id, parameters });
+    }
+  }
+  return streams;
+}
+
 export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
-  const corsOrigins = normalizeCorsOrigins(options.cors?.origins ?? null);
-  const allowMethodsHeader = formatHeaderList(
-    (options.cors?.allowMethods && options.cors.allowMethods.length > 0 ? options.cors.allowMethods : ['GET', 'POST', 'OPTIONS']).map(
-      (method) => method.toUpperCase(),
-    ),
-  );
-  const defaultAllowHeaders = formatHeaderList(
-    options.cors?.allowHeaders && options.cors.allowHeaders.length > 0
-      ? options.cors.allowHeaders
-      : ['Content-Type', 'Authorization', 'Accept'],
-  );
-  const allowCredentials = options.cors?.allowCredentials === true;
-  const maxAgeSeconds =
-    typeof options.cors?.maxAgeSeconds === 'number' && Number.isFinite(options.cors.maxAgeSeconds) && options.cors.maxAgeSeconds >= 0
-      ? Math.floor(options.cors.maxAgeSeconds)
-      : 600;
+  const corsConfig = options.cors;
 
-  const resolveOrigin = (requestOrigin: string | undefined): string | null => {
-    if (!requestOrigin) {
-      return corsOrigins === '*' ? '*' : null;
+  function resolveAllowedOrigin(origin?: string | null): string | null {
+    if (!corsConfig) return null;
+    if (!origin) return null;
+    const { origins } = corsConfig;
+    if (!origins || origins.length === 0 || origins.includes('*') || origins.includes(origin)) {
+      return origins?.includes('*') ? '*' : origin;
     }
-    if (corsOrigins === '*') {
-      return '*';
-    }
-    return corsOrigins.includes(requestOrigin) ? requestOrigin : null;
-  };
+    return null;
+  }
 
-  const setCorsHeaders = (req: http.IncomingMessage, res: http.ServerResponse, preflight: boolean): void => {
-    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-    const originHeader = resolveOrigin(requestOrigin);
-    if (originHeader) {
-      res.setHeader('Access-Control-Allow-Origin', originHeader);
-      if (originHeader !== '*') {
-        const vary = res.getHeader('Vary');
-        res.setHeader('Vary', vary ? `${vary}, Origin` : 'Origin');
-      }
-      if (allowCredentials && originHeader !== '*') {
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-      }
+  function applyCorsHeaders(res: http.ServerResponse, origin?: string | null): boolean {
+    if (!corsConfig) return false;
+    res.setHeader('Vary', 'Origin');
+    const allowedOrigin = resolveAllowedOrigin(origin);
+    if (!allowedOrigin) return false;
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    if (corsConfig.allowCredentials) {
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
-    if (allowMethodsHeader) {
-      res.setHeader('Access-Control-Allow-Methods', allowMethodsHeader);
-    }
-    if (preflight) {
-      const requestHeaders =
-        typeof req.headers['access-control-request-headers'] === 'string' ? req.headers['access-control-request-headers'] : null;
-      if (requestHeaders) {
-        res.setHeader('Access-Control-Allow-Headers', requestHeaders);
-      } else if (defaultAllowHeaders) {
-        res.setHeader('Access-Control-Allow-Headers', defaultAllowHeaders);
-      }
-      if (maxAgeSeconds > 0) {
-        res.setHeader('Access-Control-Max-Age', String(maxAgeSeconds));
-      }
-    } else if (defaultAllowHeaders) {
-      res.setHeader('Access-Control-Allow-Headers', defaultAllowHeaders);
-    }
-  };
+    return true;
+  }
 
   const server = http.createServer((req, res) => {
-    if (!req.url) {
-      setCorsHeaders(req, res, false);
-      res.statusCode = 400;
-      res.end();
-      return;
-    }
-
-    if (req.method === 'OPTIONS') {
-      setCorsHeaders(req, res, true);
-      res.statusCode = 204;
-      res.end();
-      return;
-    }
-
-    const url = new URL(req.url, `http://${req.headers.host ?? options.host}`);
-
-    setCorsHeaders(req, res, false);
-
-    if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/status')) {
-      sendJson(res, 200, options.getStatus());
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/auth/status') {
-      if (!options.getAuthStatus) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      try {
-        const payload = options.getAuthStatus();
-        sendJson(res, 200, payload);
-      } catch (error) {
-        console.error('[powersync-daemon] failed to provide auth status', error);
-        res.statusCode = 500;
-        res.end();
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/auth/logout') {
-      if (!options.handleAuthLogout) {
-        res.statusCode = 503;
+    const handler = async () => {
+      if (!req.url) {
+        res.statusCode = 400;
         res.end();
         return;
       }
 
-      Promise.resolve()
-        .then(() => options.handleAuthLogout?.())
-        .then((payload) => {
-          if (!payload) {
-            res.statusCode = 204;
-            res.end();
-            return;
-          }
-          sendJson(res, resolveAuthStatusCode(payload, 200), toAuthStatusPayload(payload));
-        })
-        .catch((error) => {
-          console.error('[powersync-daemon] failed to process auth logout', error);
-          res.statusCode = 500;
-          res.end();
-        });
-      return;
-    }
+      const url = new URL(req.url, `http://${req.headers.host ?? options.host}`);
+      const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
 
-    if (req.method === 'POST' && url.pathname === '/auth/guest') {
-      if (!options.handleAuthGuest) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      Promise.resolve()
-        .then(async () => {
-          const body = await readJsonBody<Record<string, unknown>>(req);
-          return options.handleAuthGuest?.(body ?? {});
-        })
-        .then((payload) => {
-          if (!payload) {
-            res.statusCode = 204;
-            res.end();
-            return;
-          }
-          sendJson(res, resolveAuthStatusCode(payload, 200), toAuthStatusPayload(payload));
-        })
-        .catch((error) => {
-          console.error('[powersync-daemon] failed to process auth guest login', error);
-          res.statusCode = 500;
-          res.end();
-        });
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/auth/device') {
-      if (!options.handleAuthDevice) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      Promise.resolve()
-        .then(async () => {
-          const body = await readJsonBody<Record<string, unknown>>(req);
-          return options.handleAuthDevice?.(body ?? {});
-        })
-        .then((payload) => {
-          if (!payload) {
-            res.statusCode = 204;
-            res.end();
-            return;
-          }
-          sendJson(res, resolveAuthStatusCode(payload, 202), toAuthStatusPayload(payload));
-        })
-        .catch((error) => {
-          console.error('[powersync-daemon] failed to process auth device login', error);
-          res.statusCode = 500;
-          res.end();
-        });
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/streams') {
-      if (!options.listStreams) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      try {
-        sendJson(res, 200, { streams: options.listStreams() });
-      } catch (error) {
-        console.error('[powersync-daemon] failed to list streams', error);
-        res.statusCode = 500;
-        res.end();
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/streams') {
-      if (!options.subscribeStreams) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      Promise.resolve()
-        .then(async () => {
-          const body = await readJsonBody<{ streams?: unknown }>(req);
-          const streams = parseStreamList(body?.streams);
-          if (streams.length === 0) {
-            res.statusCode = 400;
-            res.end();
-            return null;
-          }
-          return options.subscribeStreams?.(streams).then((result) => ({
-            added: result?.added ?? [],
-            alreadyActive: result?.alreadyActive ?? [],
-            queued: result?.queued ?? [],
-          }));
-        })
-        .then((payload) => {
-          if (!payload) return;
-          sendJson(res, 200, payload);
-        })
-        .catch((error) => {
-          console.error('[powersync-daemon] failed to subscribe streams', error);
-          res.statusCode = 500;
-          res.end();
-        });
-      return;
-    }
-
-    if (req.method === 'DELETE' && url.pathname === '/streams') {
-      if (!options.unsubscribeStreams) {
-        res.statusCode = 503;
-        res.end();
-        return;
-      }
-      Promise.resolve()
-        .then(async () => {
-          const body = await readJsonBody<{ streams?: unknown }>(req);
-          const streams = parseStreamList(body?.streams);
-          if (streams.length === 0) {
-            res.statusCode = 400;
-            res.end();
-            return null;
-          }
-          return options.unsubscribeStreams?.(streams);
-        })
-        .then((payload) => {
-          if (!payload) return;
-          sendJson(res, 200, payload);
-        })
-        .catch((error) => {
-          console.error('[powersync-daemon] failed to unsubscribe streams', error);
-          res.statusCode = 500;
-          res.end();
-        });
-      return;
-    }
-
-    if (req.method === 'GET' && options.fetchRefs) {
-      const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/refs$/.exec(url.pathname);
-      if (match) {
-        const [, rawOrg, rawRepo] = match;
-        const orgId = decodeURIComponent(rawOrg);
-        const repoId = decodeURIComponent(rawRepo);
-        const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Number(limitParam) : undefined;
-
-        if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-          res.statusCode = 400;
+      if (req.method === 'OPTIONS') {
+        const methods = allowedMethodsForPath(url.pathname, options);
+        if (!methods) {
+          res.statusCode = 404;
           res.end();
           return;
         }
+        if (applyCorsHeaders(res, originHeader)) {
+          const allowHeaders = corsConfig?.allowHeaders ?? ['Content-Type'];
+          const allowMethods = corsConfig?.allowMethods ?? Array.from(new Set([...methods, 'OPTIONS']));
+          res.setHeader('Access-Control-Allow-Methods', allowMethods.join(', '));
+          res.setHeader('Access-Control-Allow-Headers', allowHeaders.join(', '));
+        }
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
 
-        Promise.resolve()
-          .then(() => options.fetchRefs?.({ orgId, repoId, limit }))
-          .then((rows) => sendJson(res, 200, { orgId, repoId, refs: rows }))
-          .catch((error) => {
+      if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/status')) {
+        applyCorsHeaders(res, originHeader);
+        sendJson(res, 200, options.getStatus());
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/auth/status' && options.getAuthStatus) {
+        try {
+          const payload = await options.getAuthStatus();
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, 200, payload ?? {});
+        } catch (error) {
+          console.error('[powersync-daemon] failed to resolve auth status', error);
+          res.statusCode = 500;
+          res.end();
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/auth/guest' && options.handleAuthGuest) {
+        try {
+          const payload = (await readJsonBody<Record<string, unknown>>(req)) ?? {};
+          const response = await options.handleAuthGuest(payload);
+          const { httpStatus, ...rest } = response ?? {};
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, httpStatus ?? 200, rest ?? {});
+        } catch (error) {
+          console.error('[powersync-daemon] guest auth handler failed', error);
+          res.statusCode = 500;
+          res.end();
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/auth/device' && options.handleAuthDevice) {
+        try {
+          const payload = (await readJsonBody<Record<string, unknown>>(req)) ?? {};
+          const response = await options.handleAuthDevice(payload);
+          const { httpStatus, ...rest } = response ?? {};
+          const status = httpStatus ?? (rest?.status === 'pending' ? 202 : 200);
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, status, rest ?? {});
+        } catch (error) {
+          console.error('[powersync-daemon] device auth handler failed', error);
+          res.statusCode = 500;
+          res.end();
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/auth/logout' && options.handleAuthLogout) {
+        try {
+          const payload = await readJsonBody<Record<string, unknown>>(req);
+          const response = await options.handleAuthLogout(payload ?? null);
+          const { httpStatus, ...rest } = response ?? {};
+          const status = httpStatus ?? (rest?.status === 'auth_required' ? 401 : 200);
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, status, rest ?? {});
+        } catch (error) {
+          console.error('[powersync-daemon] logout handler failed', error);
+          res.statusCode = 500;
+          res.end();
+        }
+        return;
+      }
+
+      if (req.method === 'GET' && options.fetchRefs) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/refs$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+          const limitParam = url.searchParams.get('limit');
+          const limit = limitParam ? Number(limitParam) : undefined;
+
+          if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
+
+          try {
+            const rows = await options.fetchRefs({ orgId, repoId, limit });
+            applyCorsHeaders(res, originHeader);
+            sendJson(res, 200, { orgId, repoId, refs: rows });
+          } catch (error) {
             console.error('[powersync-daemon] failed to fetch refs', error);
             res.statusCode = 500;
             res.end();
-          });
-        return;
-      }
-    }
-
-    if (req.method === 'GET' && options.listRepos) {
-      const match = /^\/orgs\/([^/]+)\/repos$/.exec(url.pathname);
-      if (match) {
-        const [, rawOrg] = match;
-        const orgId = decodeURIComponent(rawOrg);
-        const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Number(limitParam) : undefined;
-
-        if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-          res.statusCode = 400;
-          res.end();
+          }
           return;
         }
-
-        Promise.resolve()
-          .then(() => options.listRepos?.({ orgId, limit }))
-          .then((rows) => sendJson(res, 200, { orgId, repos: rows }))
-          .catch((error) => {
-            console.error('[powersync-daemon] failed to list repos', error);
-            res.statusCode = 500;
-            res.end();
-          });
-        return;
       }
-    }
 
-    if (req.method === 'GET' && options.getRepoSummary) {
-      const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/summary$/.exec(url.pathname);
-      if (match) {
-        const [, rawOrg, rawRepo] = match;
-        const orgId = decodeURIComponent(rawOrg);
-        const repoId = decodeURIComponent(rawRepo);
-
-        Promise.resolve()
-          .then(() => options.getRepoSummary?.({ orgId, repoId }))
-          .then((summary) => {
-            if (!summary) {
-              res.statusCode = 404;
-              res.end();
-              return;
-            }
-            sendJson(res, 200, summary);
-          })
-          .catch((error) => {
+      if (req.method === 'GET' && options.getRepoSummary) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/summary$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+          try {
+            const summary = await options.getRepoSummary({ orgId, repoId });
+            applyCorsHeaders(res, originHeader);
+            sendJson(res, 200, summary ?? { orgId, repoId, counts: {} });
+          } catch (error) {
             console.error('[powersync-daemon] failed to fetch repo summary', error);
             res.statusCode = 500;
             res.end();
-          });
+          }
+          return;
+        }
+      }
+
+      if (req.method === 'GET' && options.listRepos) {
+        const match = /^\/orgs\/([^/]+)\/repos$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const limitParam = url.searchParams.get('limit');
+          const limit = limitParam ? Number(limitParam) : undefined;
+
+          if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
+
+          try {
+            const rows = await options.listRepos({ orgId, limit });
+            applyCorsHeaders(res, originHeader);
+            sendJson(res, 200, { orgId, repos: rows });
+          } catch (error) {
+            console.error('[powersync-daemon] failed to list repos', error);
+            res.statusCode = 500;
+            res.end();
+          }
+          return;
+        }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/streams' && options.listStreams) {
+        try {
+          const streams = await options.listStreams();
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, 200, { streams: streams ?? [] });
+        } catch (error) {
+          console.error('[powersync-daemon] failed to list streams', error);
+          res.statusCode = 500;
+          res.end();
+        }
         return;
       }
-    }
 
-    if (req.method === 'POST' && options.fetchPack) {
-      const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/git\/fetch$/.exec(url.pathname);
-      if (match) {
-        const [, rawOrg, rawRepo] = match;
-        const orgId = decodeURIComponent(rawOrg);
-        const repoId = decodeURIComponent(rawRepo);
+      if (req.method === 'POST' && url.pathname === '/streams' && options.subscribeStreams) {
+        try {
+          const body = await readJsonBody<{ streams?: unknown }>(req);
+          const streams = sanitizeStreams(body?.streams);
+          if (streams.length === 0) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
+          const payload = await options.subscribeStreams(streams);
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, 200, payload ?? { added: [], alreadyActive: [], queued: [] });
+        } catch (error) {
+          console.error('[powersync-daemon] failed to subscribe streams', error);
+          if (!res.writableEnded) {
+            res.statusCode = 500;
+            res.end();
+          }
+        }
+        return;
+      }
 
-        Promise.resolve()
-          .then(async () => {
+      if (req.method === 'DELETE' && url.pathname === '/streams' && options.unsubscribeStreams) {
+        try {
+          const body = await readJsonBody<{ streams?: unknown }>(req);
+          const streams = sanitizeStreams(body?.streams);
+          if (streams.length === 0) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
+          const payload = await options.unsubscribeStreams(streams);
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, 200, payload ?? { removed: [], notFound: [] });
+        } catch (error) {
+          console.error('[powersync-daemon] failed to unsubscribe streams', error);
+          if (!res.writableEnded) {
+            res.statusCode = 500;
+            res.end();
+          }
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && options.fetchPack) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/git\/fetch$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+
+          try {
             const body = await readJsonBody<{ wants?: unknown }>(req);
-            const wants = Array.isArray(body?.wants) ? body!.wants.filter((value): value is string => typeof value === 'string' && value.length > 0) : undefined;
-            return options.fetchPack?.({ orgId, repoId, wants });
-          })
-          .then((payload) => {
+            const wants = Array.isArray(body?.wants)
+              ? body!.wants.filter((value): value is string => typeof value === 'string' && value.length > 0)
+              : undefined;
+            const payload = await options.fetchPack({ orgId, repoId, wants });
             if (!payload) {
               res.statusCode = 404;
               res.end();
               return;
             }
-
             const response: Record<string, unknown> = {
               pack: payload.packBase64,
               packEncoding: payload.encoding ?? 'base64',
@@ -518,75 +467,81 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
             if (payload.createdAt) {
               response.createdAt = payload.createdAt;
             }
-
+            applyCorsHeaders(res, originHeader);
             sendJson(res, 200, response);
-          })
-          .catch((error) => {
+          } catch (error) {
             console.error('[powersync-daemon] failed to serve pack', error);
             res.statusCode = 500;
             res.end();
-          });
-        return;
+          }
+          return;
+        }
       }
-    }
 
-    if (req.method === 'POST' && options.pushPack) {
-      const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/git\/push$/.exec(url.pathname);
-      if (match) {
-        const [, rawOrg, rawRepo] = match;
-        const orgId = decodeURIComponent(rawOrg);
-        const repoId = decodeURIComponent(rawRepo);
-        const contentType = req.headers['content-type'] ?? '';
+      if (req.method === 'POST' && options.pushPack) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/git\/push$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+          const contentType = req.headers['content-type'] ?? '';
 
-        parsePushPayload(req, contentType)
-          .then((payload) => {
+          try {
+            const payload = await parsePushPayload(req, contentType);
             if (!payload || !Array.isArray(payload.updates) || payload.updates.length === 0) {
               res.statusCode = 400;
               res.end();
-              return null;
-            }
-            return options.pushPack?.({ orgId, repoId, payload });
-          })
-          .then((result) => {
-            if (!result) {
               return;
             }
-            sendJson(res, 200, result);
-          })
-          .catch((error) => {
+            const result = await options.pushPack({ orgId, repoId, payload });
+            if (result) {
+              applyCorsHeaders(res, originHeader);
+              sendJson(res, 200, result);
+            }
+          } catch (error) {
             console.error('[powersync-daemon] failed to process push', error);
             if (!res.writableEnded) {
               res.statusCode = 500;
               res.end();
             }
-          });
-        return;
-      }
-    }
-
-    if (req.method === 'POST' && url.pathname === '/shutdown') {
-      if (!options.onShutdownRequested) {
-        res.statusCode = 503;
-        res.end();
-        return;
+          }
+          return;
+        }
       }
 
-      Promise.resolve()
-        .then(() => options.onShutdownRequested?.())
-        .then(() => sendJson(res, 202, { accepted: true }))
-        .catch((error) => {
+      if (req.method === 'POST' && url.pathname === '/shutdown') {
+        if (!options.onShutdownRequested) {
+          res.statusCode = 503;
+          res.end();
+          return;
+        }
+        try {
+          await options.onShutdownRequested();
+          applyCorsHeaders(res, originHeader);
+          sendJson(res, 202, { accepted: true });
+        } catch (error) {
           console.error('[powersync-daemon] failed to process shutdown request', error);
           res.statusCode = 500;
           res.end();
-        });
-      return;
-    }
+        }
+        return;
+      }
 
-    res.statusCode = req.method === 'GET' ? 404 : 405;
-    if (res.statusCode === 405) {
-      res.setHeader('Allow', 'GET, POST');
-    }
-    res.end();
+      res.statusCode = req.method === 'GET' ? 404 : 405;
+      if (res.statusCode === 405) {
+        const allow = corsConfig?.allowMethods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'];
+        res.setHeader('Allow', allow.join(', '));
+      }
+      res.end();
+    };
+
+    handler().catch((error) => {
+      console.error('[powersync-daemon] request handler error', error);
+      if (!res.writableEnded) {
+        res.statusCode = 500;
+        res.end();
+      }
+    });
   });
 
   return {

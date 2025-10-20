@@ -11,13 +11,15 @@
     "lint": "echo 'stub'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "dev:local": "VITE_POWERSYNC_USE_DAEMON=true vite",
+    "dev:prod": "VITE_POWERSYNC_USE_DAEMON=false vite --mode production --port 5784"
   },
   "dependencies": {
-    "@powersync/common": "0.0.0-dev-20251003085035",
+    "@powersync/common": "1.40.0",
     "@journeyapps/wa-sqlite": "^1.3.2",
-    "@powersync/react": "0.0.0-dev-20251003085035",
-    "@powersync/web": "0.0.0-dev-20251003085035",
+    "@powersync/react": "1.8.1",
+    "@powersync/web": "1.27.1",
     "@supabase/supabase-js": "^2.48.1",
     "@tanstack/db": "workspace:*",
     "@tanstack/powersync-db-collection": "workspace:*",
@@ -27,7 +29,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.2",
+    "@playwright/test": "^1.56.1",
     "@types/node": "^20.16.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

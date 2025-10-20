@@ -83,9 +83,11 @@ export default defineConfig({
     },
     {
       name: 'chromium-live',
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], },
       testMatch: /tests\/e2e\/live-.*\.spec\.ts/,
       dependencies: ['setup-live'],
+      
+      
     },
   ],
   webServer: {
@@ -100,6 +102,7 @@ export default defineConfig({
       VITE_POWERSYNC_USE_FIXTURES: process.env.VITE_POWERSYNC_USE_FIXTURES ?? 'true',
       VITE_POWERSYNC_USE_DAEMON: process.env.VITE_POWERSYNC_USE_DAEMON ?? 'true',
       VITE_POWERSYNC_REQUIRE_VAULT: process.env.VITE_POWERSYNC_REQUIRE_VAULT ?? 'false',
+      VITE_DISABLE_STRICT_MODE: process.env.VITE_DISABLE_STRICT_MODE ?? 'true',
       VITE_SUPABASE_URL: SUPABASE_URL,
       VITE_SUPABASE_ANON_KEY: SUPABASE_ANON_KEY,
     },

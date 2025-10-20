@@ -24,6 +24,33 @@ export const test = base.extend({
   page: async ({ page }, use, testInfo) => {
     const consoleLines: string[] = []
     const pageErrors: string[] = []
+    let fatalError: Error | null = null
+    let rejectFatal: ((error: Error) => void) | null = null
+
+    const fatalConsolePatterns: Array<{ regex: RegExp; message: string }> = [
+      {
+        regex: /ERR_CONNECTION_REFUSED/i,
+        message: 'Browser failed to reach the dev server (ERR_CONNECTION_REFUSED)',
+      },
+      {
+        regex: /server connection lost/i,
+        message: 'Vite dev server reported a lost connection; it likely crashed or restarted',
+      },
+    ]
+
+    const fatalPromise = new Promise<never>((_, reject) => {
+      rejectFatal = reject
+    })
+
+    const triggerFatal = (reason: string, detail: string) => {
+      if (fatalError) return
+      fatalError = new Error(`${reason}. Latest message: ${detail}`)
+      if (rejectFatal) {
+        rejectFatal(fatalError)
+        rejectFatal = null
+      }
+      void page.close().catch(() => undefined)
+    }
 
     const handleConsole = (msg: ConsoleMessage) => {
       const loc = msg.location()
@@ -33,6 +60,12 @@ export const test = base.extend({
       const formatted = formatConsoleMessage(text, type, formattedLocation)
       if (type === 'error' || type === 'warning') {
         consoleLines.push(formatted)
+      }
+      for (const pattern of fatalConsolePatterns) {
+        if (pattern.regex.test(text)) {
+          triggerFatal(pattern.message, formatted)
+          break
+        }
       }
       // Always surface the message in the worker output for quick diagnosis
       console.log(formatted)
@@ -45,13 +78,21 @@ export const test = base.extend({
       if (error.stack) {
         console.log(error.stack)
       }
+      if (/ERR_CONNECTION_REFUSED/i.test(error.message)) {
+        triggerFatal('Page error indicates the dev server became unavailable', formatted)
+      }
     }
 
     page.on('console', handleConsole)
     page.on('pageerror', handlePageError)
 
     try {
-      await use(page)
+      await Promise.race([use(page), fatalPromise])
+    } catch (error) {
+      if (fatalError) {
+        throw fatalError
+      }
+      throw error
     } finally {
       page.off('console', handleConsole)
       page.off('pageerror', handlePageError)
@@ -62,13 +103,16 @@ export const test = base.extend({
           contentType: 'text/plain',
         })
       }
-
       if (pageErrors.length > 0) {
         await testInfo.attach('page-errors', {
           body: pageErrors.join('\n'),
           contentType: 'text/plain',
         })
       }
+    }
+
+    if (fatalError) {
+      throw fatalError
     }
   },
 })

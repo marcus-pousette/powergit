@@ -24,7 +24,7 @@ const supabaseDbUrl =
 
 const { Client } = require('pg')
 
-const REQUIRED_TABLES = ['refs', 'commits', 'file_changes', 'git_packs']
+const REQUIRED_TABLES = ['refs', 'commits', 'file_changes', 'objects']
 
 async function fileExists(path) {
   try {
@@ -91,6 +91,37 @@ function transformRule(rule, index, explicitStream) {
   }
 }
 
+function extractRules(rawRules) {
+  if (Array.isArray(rawRules)) {
+    if (rawRules.length === 0) {
+      throw new Error('PowerSync config must define at least one sync rule under sync_rules')
+    }
+    return rawRules.map((rule, index) => transformRule(rule, index))
+  }
+
+  if (rawRules && typeof rawRules === 'object') {
+    if (typeof rawRules.content === 'string') {
+      return null
+    }
+    if (typeof rawRules.path === 'string') {
+      return null
+    }
+
+    const entries = Object.entries(rawRules).filter(([key]) => key !== 'path' && key !== 'exit_on_error')
+    if (entries.length === 0) {
+      throw new Error('PowerSync config must define at least one sync rule under sync_rules')
+    }
+    return entries.map(([stream, rule], index) => {
+      if (!rule || typeof rule !== 'object') {
+        throw new Error(`sync_rules entry ${stream} must be an object`)
+      }
+      return transformRule(rule, index, stream)
+    })
+  }
+
+  throw new Error('PowerSync config sync_rules must be an array, object, or inline content block')
+}
+
 async function loadYamlRules() {
   if (!(await fileExists(yamlPath))) {
     throw new Error(`Missing PowerSync config at ${yamlPath}`)
@@ -103,29 +134,8 @@ async function loadYamlRules() {
     throw new Error('PowerSync config is empty or invalid YAML')
   }
 
-  const rawRules = parsed.sync_rules
-
-  if (Array.isArray(rawRules)) {
-    if (rawRules.length === 0) {
-      throw new Error('PowerSync config must define at least one sync rule under sync_rules')
-    }
-    return rawRules.map((rule, index) => transformRule(rule, index))
-  }
-
-  if (rawRules && typeof rawRules === 'object') {
-    const entries = Object.entries(rawRules)
-    if (entries.length === 0) {
-      throw new Error('PowerSync config must define at least one sync rule under sync_rules')
-    }
-    return entries.map(([stream, rule], index) => {
-      if (!rule || typeof rule !== 'object') {
-        throw new Error(`sync_rules entry ${stream} must be an object`)
-      }
-      return transformRule(rule, index, stream)
-    })
-  }
-
-  throw new Error('PowerSync config sync_rules must be an array or map of stream definitions')
+  const rules = extractRules(parsed.sync_rules)
+  return rules
 }
 
 async function verifyRequiredTables(client) {
@@ -139,7 +149,7 @@ async function verifyRequiredTables(client) {
   }
 
   if (missing.length > 0) {
-    const migrationHint = 'supabase/migrations/20241007090000_powersync_git_tables.sql'
+    const migrationHint = 'supabase/schema.sql'
     throw new Error(
       `Missing PowerSync tables: ${missing.join(', ')}. Run "supabase db push" to apply ${migrationHint} before seeding.`,
     )
@@ -148,6 +158,10 @@ async function verifyRequiredTables(client) {
 
 async function run() {
   const rules = await loadYamlRules()
+  if (rules === null) {
+    console.info('ℹ️ PowerSync config provides inline SQL sync rules; skipping database seeding.')
+    return
+  }
   const desired = new Map(
     rules.map(({ stream, tableName, rule, ruleHash }) => [stream, { stream, tableName, rule, ruleHash }]),
   )

@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { startStack, stopStack } from '../../../scripts/test-stack-hooks.js'
-import { getServerSupabaseClient, parsePowerSyncUrl } from '@shared/core'
+import { getServerSupabaseClient, parsePowerSyncUrl, buildRepoStreamTargets, formatStreamKey } from '@shared/core'
 
 const execFileAsync = promisify(execFile)
 const MAX_WAIT_MS = Number.parseInt(process.env.POWERSYNC_TEST_MAX_WAIT_MS ?? '60000', 10)
@@ -189,12 +189,8 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
   it('pushes commits and fetches them into a fresh repo', async () => {
     const commitSha = (await runGit(['rev-parse', 'HEAD'], repoDir, env)).stdout.trim()
 
-    const streamIds = [
-      `orgs/${org}/repos/${repo}/refs`,
-      `orgs/${org}/repos/${repo}/commits`,
-      `orgs/${org}/repos/${repo}/file_changes`,
-      `orgs/${org}/repos/${repo}/objects`,
-    ]
+    const streamTargets = buildRepoStreamTargets(org, repo)
+    const streamKeys = streamTargets.map(formatStreamKey)
 
     const listStreams = async () => {
       const res = await fetch(`${powersyncEndpoint}/streams`).catch(() => null)
@@ -205,8 +201,8 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
     }
 
     const initialStreams = await listStreams()
-    for (const streamId of streamIds) {
-      expect(initialStreams).not.toContain(streamId)
+    for (const key of streamKeys) {
+      expect(initialStreams).not.toContain(key)
     }
 
     console.error('[test] before push')
@@ -215,7 +211,7 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
 
     await waitFor(async () => {
       const current = await listStreams()
-      return streamIds.every((streamId) => current.includes(streamId)) ? current : null
+      return streamKeys.every((key) => current.includes(key)) ? current : null
     })
 
     cloneDir = await mkdtemp(join(tmpdir(), 'powersync-clone-'))

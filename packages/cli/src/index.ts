@@ -4,19 +4,28 @@ import { tmpdir } from 'node:os'
 import { join, resolve, dirname, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
-import { PowerSyncRemoteClient, RAW_TABLE_SPECS, type RepoDataSummary, parsePowerSyncUrl } from '@shared/core'
+import {
+  PowerSyncRemoteClient,
+  RAW_TABLE_SPECS,
+  type RepoDataSummary,
+  parsePowerSyncUrl,
+  REPO_STREAM_SUFFIXES,
+  type RepoStreamSuffix,
+  buildRepoStreamTargets,
+  type RepoStreamTarget,
+} from '@shared/core'
 
-const STREAM_SUFFIXES = ['refs', 'commits', 'file_changes', 'objects'] as const
-type StreamSuffix = typeof STREAM_SUFFIXES[number]
+type StreamSuffix = RepoStreamSuffix
+type StreamSubscriptionRequest = RepoStreamTarget
 const DEFAULT_SEED_BRANCH = 'main'
 const DEFAULT_SEED_AUTHOR = { name: 'PowerSync Seed Bot', email: 'seed@powersync.test' }
 const DEFAULT_TEMPLATE_REPO = 'https://github.com/powersync-community/react-supabase-chat-e2ee.git'
 
-function buildStreamIds(org: string, repo: string): string[] {
-  return STREAM_SUFFIXES.map((suffix) => `orgs/${org}/repos/${repo}/${suffix}`)
+function buildStreamTargets(org: string, repo: string): StreamSubscriptionRequest[] {
+  return buildRepoStreamTargets(org, repo)
 }
 
-async function subscribeRepoStreams(baseUrl: string, streams: string[]): Promise<void> {
+async function subscribeRepoStreams(baseUrl: string, streams: StreamSubscriptionRequest[]): Promise<void> {
   if (typeof globalThis.fetch !== 'function') {
     console.warn('[psgit] fetch API unavailable; cannot request daemon stream subscription')
     return
@@ -231,7 +240,7 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
     )
   }
 
-  await subscribeRepoStreams(daemonBaseUrl, buildStreamIds(org, repo))
+  await subscribeRepoStreams(daemonBaseUrl, buildStreamTargets(org, repo))
 
   const client = new PowerSyncRemoteClient({
     endpoint: daemonBaseUrl,
@@ -241,7 +250,7 @@ export async function syncPowerSyncRepository(dir: string, options: SyncCommandO
 
   const summary: RepoDataSummary = await client.getRepoSummary(org, repo)
   const counts = Object.fromEntries(
-    STREAM_SUFFIXES.map((name) => [name, summary.counts[name] ?? 0]),
+    REPO_STREAM_SUFFIXES.map((name) => [name, summary.counts[name] ?? 0]),
   ) as Record<StreamSuffix, number>
 
   return {

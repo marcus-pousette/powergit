@@ -29,22 +29,27 @@ describe('createDaemonServer stream routes', () => {
       subscribeStreams: async (streams) => {
         const added: string[] = [];
         streams.forEach((stream) => {
-          if (!desired.has(stream)) {
-            desired.add(stream);
-            added.push(stream);
+          const id = stream.id;
+          if (!desired.has(id)) {
+            desired.add(id);
+            added.push(id);
           }
         });
-        return { added, alreadyActive: streams.filter((s) => !added.includes(s)), queued: [] };
+        const alreadyActive = streams
+          .map((stream) => stream.id)
+          .filter((id) => !added.includes(id));
+        return { added, alreadyActive, queued: [] };
       },
       unsubscribeStreams: async (streams) => {
         const removed: string[] = [];
         const notFound: string[] = [];
         streams.forEach((stream) => {
-          if (desired.has(stream)) {
-            desired.delete(stream);
-            removed.push(stream);
+          const id = stream.id;
+          if (desired.has(id)) {
+            desired.delete(id);
+            removed.push(id);
           } else {
-            notFound.push(stream);
+            notFound.push(id);
           }
         });
         return { removed, notFound };

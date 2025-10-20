@@ -43,6 +43,10 @@ function createSupabaseDouble() {
             deleteCalls.push({ table, filters });
             return { error: null };
           },
+          in: async (column: string, values: string[]) => {
+            deleteCalls.push({ table, filters: { column, values } });
+            return { error: null };
+          },
         }),
       };
     },
@@ -164,7 +168,7 @@ describe('SupabaseWriter', () => {
 
     await writer.stop();
 
-    const packCall = currentSupabaseStub.upsertCalls.find((call) => call.table === 'raw_objects');
+    const packCall = currentSupabaseStub.upsertCalls.find((call) => call.table === 'objects');
     expect(packCall).toBeTruthy();
     expect(packCall?.rows).toHaveLength(1);
     const packRow = packCall?.rows[0] ?? {};
@@ -178,7 +182,7 @@ describe('SupabaseWriter', () => {
     expect(packRow.pack_bytes).toBe(base64Pack);
     expect(packCall?.options).toMatchObject({ onConflict: 'id' });
 
-    const refUpsert = currentSupabaseStub.upsertCalls.find((call) => call.table === 'raw_refs');
+    const refUpsert = currentSupabaseStub.upsertCalls.find((call) => call.table === 'refs');
     expect(refUpsert).toBeTruthy();
     expect(refUpsert?.rows[0]).toMatchObject({
       id: 'demo/infra/refs/heads/main',
@@ -188,10 +192,11 @@ describe('SupabaseWriter', () => {
       target_sha: '1111111111111111111111111111111111111111',
     });
 
-    const deleteCall = currentSupabaseStub.deleteCalls.find((call) => call.table === 'raw_refs');
+    const deleteCall = currentSupabaseStub.deleteCalls.find((call) => call.table === 'refs');
     expect(deleteCall).toBeTruthy();
     expect(deleteCall?.filters).toEqual({
-      id: 'demo/infra/refs/heads/old',
+      column: 'id',
+      values: ['demo/infra/refs/heads/old'],
     });
 
     expect(createClientMock).toHaveBeenCalledWith('http://example.local', 'service-key', expect.any(Object));

@@ -1,8 +1,10 @@
 
 import { column, Schema, Table } from '@powersync/web'
+import { convertPowerSyncSchemaToSpecs } from '@tanstack/powersync-db-collection'
 import { buildPowerSyncSchema, powerSyncSchemaSpec } from '@shared/core/powersync/schema'
+import { RAW_TABLES_FOR_SCHEMA } from '@shared/core/powersync/raw-tables'
 
-const { schema, tables } = buildPowerSyncSchema<Schema, Table, Pick<typeof column, 'text' | 'integer'>>({
+const { tables } = buildPowerSyncSchema<Schema, Table, Pick<typeof column, 'text' | 'integer'>>({
   createSchema: (tableMap) => new Schema(tableMap as Record<string, Table>),
   createTable: (columns, options) => new Table(columns, options),
   column: {
@@ -32,10 +34,15 @@ type SchemaTables = {
 }
 
 const typedTables = tables as SchemaTables
-const typedSchema = schema as Schema<SchemaTables>
+const schemaForCollections = new Schema(typedTables as Record<string, Table>)
 
-export const AppSchema = typedSchema
+export const AppSchema = (() => {
+  const schema = new Schema({})
+  schema.withRawTables(RAW_TABLES_FOR_SCHEMA)
+  return schema
+})()
 export const { refs, commits, file_changes, objects } = typedTables
+export const collectionSpecs = convertPowerSyncSchemaToSpecs(schemaForCollections)
 
 type ColumnValueMap = {
   text: string | null

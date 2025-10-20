@@ -1,8 +1,25 @@
--- PowerSync Git metadata tables managed by Supabase migrations
--- Run via `supabase db push` or `supabase db reset`.
+-- PowerSync Git metadata tables managed by Supabase migrations.
+-- Dev-only: we drop and recreate the raw tables each run so relic views/tables never collide.
 
-drop table if exists public.refs cascade;
-create table if not exists public.raw_refs (
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'refs'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.refs cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.refs cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.refs (
   id text primary key,
   org_id text not null,
   repo_id text not null,
@@ -11,8 +28,25 @@ create table if not exists public.raw_refs (
   updated_at timestamptz not null default now()
 );
 
-drop table if exists public.commits cascade;
-create table if not exists public.raw_commits (
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'commits'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.commits cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.commits cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.commits (
   id text primary key,
   org_id text not null,
   repo_id text not null,
@@ -24,8 +58,25 @@ create table if not exists public.raw_commits (
   tree_sha text not null
 );
 
-drop table if exists public.file_changes cascade;
-create table if not exists public.raw_file_changes (
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'file_changes'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.file_changes cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.file_changes cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.file_changes (
   id text primary key,
   org_id text not null,
   repo_id text not null,
@@ -35,8 +86,25 @@ create table if not exists public.raw_file_changes (
   deletions integer not null
 );
 
-drop table if exists public.git_packs cascade;
-create table if not exists public.raw_objects (
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'objects'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.objects cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.objects cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.objects (
   id text primary key,
   org_id text not null,
   repo_id text not null,
@@ -45,32 +113,16 @@ create table if not exists public.raw_objects (
   created_at timestamptz not null default now()
 );
 
-create index if not exists raw_refs_org_repo_idx on public.raw_refs (org_id, repo_id);
-create unique index if not exists raw_refs_org_repo_name_idx on public.raw_refs (org_id, repo_id, name);
+create index if not exists refs_org_repo_idx on public.refs (org_id, repo_id);
+create unique index if not exists refs_org_repo_name_idx on public.refs (org_id, repo_id, name);
 
-create index if not exists raw_commits_org_repo_idx on public.raw_commits (org_id, repo_id);
-create unique index if not exists raw_commits_org_repo_sha_idx on public.raw_commits (org_id, repo_id, sha);
-create index if not exists raw_commits_author_idx on public.raw_commits (author_email);
+create index if not exists commits_org_repo_idx on public.commits (org_id, repo_id);
+create unique index if not exists commits_org_repo_sha_idx on public.commits (org_id, repo_id, sha);
+create index if not exists commits_author_idx on public.commits (author_email);
 
-create index if not exists raw_file_changes_org_repo_idx on public.raw_file_changes (org_id, repo_id);
-create index if not exists raw_file_changes_path_idx on public.raw_file_changes (path);
-create unique index if not exists raw_file_changes_commit_path_idx on public.raw_file_changes (org_id, repo_id, commit_sha, path);
+create index if not exists file_changes_org_repo_idx on public.file_changes (org_id, repo_id);
+create index if not exists file_changes_path_idx on public.file_changes (path);
+create unique index if not exists file_changes_commit_path_idx on public.file_changes (org_id, repo_id, commit_sha, path);
 
-create index if not exists raw_objects_recent_idx on public.raw_objects (org_id, repo_id, created_at desc);
-create unique index if not exists raw_objects_oid_idx on public.raw_objects (org_id, repo_id, pack_oid);
-
-create or replace view public.refs as
-  select id, org_id, repo_id, name, target_sha, updated_at
-  from public.raw_refs;
-
-create or replace view public.commits as
-  select id, org_id, repo_id, sha, author_name, author_email, authored_at, message, tree_sha
-  from public.raw_commits;
-
-create or replace view public.file_changes as
-  select id, org_id, repo_id, commit_sha, path, additions, deletions
-  from public.raw_file_changes;
-
-create or replace view public.git_packs as
-  select id, org_id, repo_id, pack_oid, pack_bytes, created_at
-  from public.raw_objects;
+create index if not exists objects_recent_idx on public.objects (org_id, repo_id, created_at desc);
+create unique index if not exists objects_oid_idx on public.objects (org_id, repo_id, pack_oid);

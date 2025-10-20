@@ -15,6 +15,7 @@ import {
   type DaemonAuthStatus,
 } from './daemon-client'
 import { getAccessToken } from './supabase'
+import { RAW_TABLE_SPECS } from '@shared/core/powersync/raw-tables'
 
 declare global {
   interface Window {
@@ -41,7 +42,7 @@ function resolvePowerSyncDisabled(): boolean {
 }
 
 const isPowerSyncDisabled = resolvePowerSyncDisabled()
-const isMultiTabCapable = typeof SharedWorker !== 'undefined'
+const isMultiTabCapable = false
 
 const PLACEHOLDER_VALUES = new Set([
   'dev-token-placeholder',
@@ -64,6 +65,157 @@ function readEnvString(name: string): string | null {
   const value = env[name]
   if (isPlaceholder(value)) return null
   return value!.trim()
+}
+
+let pendingPowerSyncClose: Promise<unknown> | null = null
+
+async function waitForPendingPowerSyncClose(): Promise<void> {
+  if (!pendingPowerSyncClose) return
+  try {
+    await pendingPowerSyncClose
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.debug('[PowerSync] pending close rejected', error)
+    }
+  }
+}
+
+type RawMigrationResultRow = Record<string, unknown>
+
+function firstRowFromResult(result: unknown): RawMigrationResultRow | null {
+  const rows = (result as { rows?: unknown })?.rows
+  if (!rows) return null
+  if (typeof (rows as { item?: unknown }).item === 'function') {
+    return ((rows as { item: (index: number) => RawMigrationResultRow }).item(0)) ?? null
+  }
+  if (Array.isArray(rows)) {
+    return (rows as Array<RawMigrationResultRow>)[0] ?? null
+  }
+  return null
+}
+
+function parseCountRow(row: RawMigrationResultRow | null): number {
+  if (!row) return 0
+  const candidates = ['count', 'COUNT']
+  for (const key of candidates) {
+    const value = row[key]
+    if (value !== undefined) {
+      const num = Number(value)
+      return Number.isFinite(num) ? num : 0
+    }
+  }
+  const [fallback] = Object.values(row)
+  const num = Number(fallback)
+  return Number.isFinite(num) ? num : 0
+}
+
+async function performRawTableMigration(database: PowerSyncDatabase): Promise<void> {
+  if (import.meta.env.DEV) {
+    console.debug('[PowerSync] ensuring raw tables (browser)')
+  }
+  await database.writeTransaction(async (tx) => {
+    const untypedCheck = await tx.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ps_untyped' LIMIT 1",
+    )
+    const hasUntyped = firstRowFromResult(untypedCheck) !== null
+    const entries = Object.entries(RAW_TABLE_SPECS) as Array<
+      [keyof typeof RAW_TABLE_SPECS, (typeof RAW_TABLE_SPECS)[keyof typeof RAW_TABLE_SPECS]]
+    >
+
+    for (const [type, spec] of entries) {
+      const columnNames = spec.put.params
+        .map((param) => {
+          if (param && typeof param === 'object' && 'Column' in param) {
+            return param.Column
+          }
+          return null
+        })
+        .filter((column): column is string => typeof column === 'string' && column.length > 0)
+
+      if (columnNames.length === 0) continue
+
+      const existingEntity = await tx.execute(
+        'SELECT type FROM sqlite_master WHERE name = ? LIMIT 1',
+        [spec.tableName],
+      )
+      const existingType = firstRowFromResult(existingEntity)?.type
+      if (existingType === 'view') {
+        let dropped = false
+        try {
+          await tx.execute('SELECT powersync_drop_view(?)', [spec.tableName])
+          dropped = true
+        } catch {
+          // fall back to raw DROP VIEW if helper not available
+        }
+        if (!dropped) {
+          await tx.execute(`DROP VIEW IF EXISTS ${spec.tableName}`)
+        }
+        if (import.meta.env.DEV) {
+          console.debug('[PowerSync] raw table migration dropped stale view', { table: spec.tableName })
+        }
+      }
+
+      let prepared = true
+      for (const statement of spec.createStatements) {
+        try {
+          await tx.execute(statement)
+        } catch (createError) {
+          prepared = false
+          console.warn('[PowerSync] raw table migration could not ensure table', {
+            table: spec.tableName,
+            error: createError,
+          })
+          break
+        }
+      }
+      if (!prepared) continue
+
+      if (import.meta.env.DEV) {
+        console.debug('[PowerSync] ensured raw table structure', {
+          table: spec.tableName,
+        })
+      }
+
+      if (!hasUntyped) {
+        continue
+      }
+
+      const countResult = await tx.execute('SELECT COUNT(*) AS count FROM ps_untyped WHERE type = ?', [type])
+      const count = parseCountRow(firstRowFromResult(countResult))
+      if (!Number.isFinite(count) || count <= 0) continue
+
+      const selectExpressions = columnNames.map((column) => `json_extract(data, '$.${column}')`).join(', ')
+      const insertSql = `
+        INSERT INTO ${spec.tableName} (id, ${columnNames.join(', ')})
+        SELECT id, ${selectExpressions}
+        FROM ps_untyped
+        WHERE type = ?
+        ON CONFLICT(id) DO NOTHING
+      `
+
+      try {
+        await tx.execute(insertSql, [type])
+        await tx.execute('DELETE FROM ps_untyped WHERE type = ?', [type])
+        if (import.meta.env.DEV) {
+          console.debug('[PowerSync] migrated raw table rows', { table: spec.tableName, count })
+        }
+      } catch (tableError) {
+        console.warn('[PowerSync] raw table migration failed for table', {
+          table: spec.tableName,
+          type,
+          error: tableError,
+        })
+      }
+    }
+  })
+}
+
+function isSchemaMismatchError(error: unknown): boolean {
+  if (!error) return false
+  const message = error instanceof Error ? error.message : String(error)
+  if (!message) return false
+  const normalized = message.toLowerCase()
+  return normalized.includes('powersync_drop_view') || normalized.includes('powersync_replace_schema')
 }
 
 export interface DaemonAuthSnapshot {
@@ -96,8 +248,12 @@ function resolveVfs(): WASQLiteVFS {
 
 export function createPowerSync() {
   const supportsWorker = typeof Worker !== 'undefined'
-  const flags = { enableMultiTabs: isMultiTabCapable, useWebWorker: supportsWorker && isMultiTabCapable }
-  return new PowerSyncDatabase({
+  const flags = {
+    enableMultiTabs: false,
+    useWebWorker: supportsWorker && isMultiTabCapable,
+    externallyUnload: true,
+  }
+  const db = new PowerSyncDatabase({
     schema: AppSchema,
     database: new WASQLiteOpenFactory({
       dbFilename: 'repo-explorer.db',
@@ -106,6 +262,14 @@ export function createPowerSync() {
     }),
     flags,
   })
+  if (import.meta.env.DEV) {
+    const originalClose = db.close.bind(db)
+    db.close = async (...args) => {
+      console.debug('[PowerSync] PowerSyncDatabase.close invoked', new Error().stack)
+      return originalClose(...args)
+    }
+  }
+  return db
 }
 
 export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
@@ -115,17 +279,41 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
   const preferDaemon = isDaemonPreferred()
   const [daemonStatus, setDaemonStatus] = React.useState<DaemonAuthStatus | null>(null)
   const [daemonReady, setDaemonReady] = React.useState(false)
+  const [rawTablesReady, setRawTablesReady] = React.useState(false)
   const closeDatabase = React.useCallback(() => {
-    return powerSync.close({ disconnect: true }).catch((error) => {
+    if (import.meta.env.DEV) {
+      console.debug('[PowerSync] closeDatabase invoked')
+    }
+    const closePromise = powerSync.close({ disconnect: true }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       if (message.toLowerCase().includes('closed')) return
       console.warn('[PowerSync] failed to close database', error)
     })
+    pendingPowerSyncClose = closePromise.finally(() => {
+      if (pendingPowerSyncClose === closePromise) {
+        pendingPowerSyncClose = null
+      }
+    })
+    return closePromise
   }, [powerSync])
 
+  const pendingCloseTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const CLOSE_DEBOUNCE_MS = 3000
+
   React.useEffect(() => {
+    if (pendingCloseTimerRef.current) {
+      clearTimeout(pendingCloseTimerRef.current)
+      pendingCloseTimerRef.current = null
+    }
     return () => {
-      void closeDatabase()
+      if (pendingCloseTimerRef.current) {
+        clearTimeout(pendingCloseTimerRef.current)
+      }
+      pendingCloseTimerRef.current = setTimeout(() => {
+        pendingCloseTimerRef.current = null
+        void closeDatabase()
+      }, CLOSE_DEBOUNCE_MS)
     }
   }, [closeDatabase])
 
@@ -164,12 +352,69 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
     }
   }, [preferDaemon])
 
+  const rawTableMigratedRef = React.useRef(false)
+
+  const runRawTableMigration = React.useCallback(async () => {
+    await waitForPendingPowerSyncClose()
+    await powerSync.init()
+    await powerSync.writeTransaction(async (tx) => {
+      try {
+        await tx.execute('SELECT powersync_disable_drop_view()')
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.debug('[PowerSync] disable drop view hook unavailable', error)
+        }
+      }
+    })
+    await performRawTableMigration(powerSync)
+  }, [powerSync])
+
+  React.useEffect(() => {
+    if (isPowerSyncDisabled) {
+      setRawTablesReady(true)
+      return
+    }
+    if (import.meta.env.DEV) {
+      console.debug('[PowerSync] raw table migration effect invoked', {
+        alreadyMigrated: rawTableMigratedRef.current,
+      })
+    }
+    if (rawTableMigratedRef.current) {
+      setRawTablesReady(true)
+      return
+    }
+    rawTableMigratedRef.current = true
+
+    let cancelled = false
+    const migrate = async () => {
+      try {
+        setRawTablesReady(false)
+        await runRawTableMigration()
+      } catch (error) {
+        if (!cancelled) {
+          console.error('[PowerSync] raw table migration failed', error)
+        }
+      } finally {
+        if (!cancelled) {
+          setRawTablesReady(true)
+        }
+      }
+    }
+
+    void migrate()
+
+    return () => {
+      cancelled = true
+    }
+  }, [runRawTableMigration])
+
   React.useEffect(() => {
     if (isPowerSyncDisabled) return
     if (status === 'error') return
     if (status !== 'authenticated') return
     if (!preferDaemon && !accessToken) return
     if (preferDaemon && !daemonReady) return
+    if (!rawTablesReady) return
 
     let disposed = false
     const connector = new Connector({
@@ -185,12 +430,67 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
       },
     })
 
-    const connect = async () => {
+    const connect = async (attempt = 0): Promise<void> => {
       try {
+        if (import.meta.env.DEV) {
+          console.debug('[PowerSyncProvider] connecting', { preferDaemon, daemonReady, hasAccessToken: !!accessToken })
+        }
+        await waitForPendingPowerSyncClose()
         await powerSync.init()
         await powerSync.connect(connector, { clientImplementation: SyncClientImplementation.RUST })
+        if (import.meta.env.DEV) {
+          const options = powerSync.connectionOptions
+          console.debug('[PowerSyncProvider] connect resolved', {
+            status: powerSync.currentStatus.toJSON(),
+            connectionOptions: options ?? null,
+          })
+        }
       } catch (error) {
         if (!disposed) {
+          if (attempt === 0 && isSchemaMismatchError(error)) {
+            console.warn('[PowerSync] schema mismatch detected; clearing local cache and retrying')
+            try {
+              await powerSync.writeTransaction(async (tx) => {
+                for (const spec of Object.values(RAW_TABLE_SPECS)) {
+                  try {
+                    await tx.execute(`DROP TABLE IF EXISTS ${spec.tableName}`)
+                  } catch (dropTableError) {
+                    console.warn('[PowerSync] failed to drop local table during schema recovery', {
+                      table: spec.tableName,
+                      error: dropTableError,
+                    })
+                  }
+                }
+              })
+            } catch (dropError) {
+              console.warn('[PowerSync] raw table cleanup prior to schema recovery failed', dropError)
+            }
+            const disconnectAndClear = (powerSync as unknown as {
+              disconnectAndClear?: (options: { clearLocal?: boolean }) => Promise<void>
+            }).disconnectAndClear
+            if (typeof disconnectAndClear === 'function') {
+              try {
+                await disconnectAndClear.call(powerSync, { clearLocal: true })
+              } catch (clearError) {
+                console.error('[PowerSync] failed to clear local database after schema mismatch', clearError)
+              }
+            } else {
+              try {
+                await powerSync.close({ disconnect: true })
+              } catch (closeError) {
+                console.error('[PowerSync] failed to close database after schema mismatch', closeError)
+              }
+            }
+            try {
+              await runRawTableMigration()
+            } catch (migrationError) {
+              console.error('[PowerSync] raw table migration failed during schema recovery', migrationError)
+            }
+            if (!disposed) {
+              await connect(attempt + 1)
+            }
+            return
+          }
           console.error('[PowerSync] failed to connect', error)
         }
       }
@@ -200,9 +500,8 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
 
     return () => {
       disposed = true
-      void closeDatabase()
     }
-  }, [powerSync, status, accessToken, closeDatabase, preferDaemon, daemonReady])
+  }, [powerSync, status, accessToken, closeDatabase, preferDaemon, daemonReady, rawTablesReady, runRawTableMigration])
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -218,6 +517,59 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
     }
     initTestFixtureBridge()
   }, [])
+
+  React.useEffect(() => {
+    if (!import.meta.env.DEV) return
+    const dispose = powerSync.registerListener({
+      statusChanged: (status) => {
+        try {
+          console.debug('[PowerSync][status]', status.toJSON())
+        } catch {
+          console.debug('[PowerSync][status]', status)
+        }
+      },
+    })
+    return () => {
+      dispose?.()
+    }
+  }, [powerSync])
+
+  React.useEffect(() => {
+    if (!import.meta.env.DEV) return
+    const logger = powerSync.logger as unknown as {
+      [key: string]: ((...args: unknown[]) => void) | undefined
+    }
+    if (!logger) return
+    const methods: Array<keyof typeof logger> = ['trace', 'debug', 'info', 'warn', 'error']
+    const restore: Array<() => void> = []
+    for (const method of methods) {
+      const original = typeof logger[method] === 'function' ? (logger[method] as (...args: unknown[]) => void) : null
+      if (!original) continue
+      logger[method] = (...args: unknown[]) => {
+        console.debug(`[PowerSync][sdk][${String(method)}]`, ...args)
+        if (method === 'error') {
+          args.forEach((arg, index) => {
+            console.debug('[PowerSync][sdk][error-arg]', index, arg)
+            const errors = (arg as { errors?: unknown }).errors
+            if (Array.isArray(errors) && errors.length > 0) {
+              console.debug('[PowerSync][sdk][aggregate]', index, errors)
+            }
+            const cause = (arg as { cause?: unknown }).cause
+            if (cause) {
+              console.debug('[PowerSync][sdk][cause]', index, cause)
+            }
+          })
+        }
+        original.apply(logger, args as [])
+      }
+      restore.push(() => {
+        logger[method] = original
+      })
+    }
+    return () => {
+      restore.forEach((fn) => fn())
+    }
+  }, [powerSync])
 
   const daemonSnapshot = React.useMemo<DaemonAuthSnapshot>(
     () => ({ enabled: preferDaemon, status: daemonStatus }),
@@ -269,7 +621,9 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
 
   return (
     <DaemonAuthContext.Provider value={daemonSnapshot}>
-      <PowerSyncContext.Provider value={powerSync}>{children}</PowerSyncContext.Provider>
+      <PowerSyncContext.Provider value={rawTablesReady ? powerSync : null}>
+        {rawTablesReady ? children : null}
+      </PowerSyncContext.Provider>
     </DaemonAuthContext.Provider>
   )
 }
