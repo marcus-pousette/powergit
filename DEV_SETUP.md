@@ -131,6 +131,7 @@ The command performs the CLI end-to-end test suite against your staged stack, co
 | Type check all packages | `pnpm typecheck` |
 | Build the remote helper | `pnpm --filter @pkg/remote-helper build` |
 | Build the CLI (`psgit`) | `pnpm --filter @pkg/cli build` |
+| Build everything | `pnpm build:all` |
 | Cache PowerSync CLI credentials | `pnpm --filter @pkg/cli login` |
 | Start local Supabase + PowerSync stack | `pnpm dev:stack` |
 | Stop local stack | `pnpm dev:stack stop` |

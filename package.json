@@ -13,6 +13,7 @@
     "dev:stack": "node ./scripts/dev-local-stack.mjs",
     "dev:stack:up": "node ./scripts/dev-stack-up.mjs",
     "dev:stack:down": "node ./scripts/dev-stack-down.mjs",
+    "build:all": "node ./scripts/build-all.mjs",
     "seed:streams": "node ./scripts/seed-sync-rules.mjs",
     "schema:migrate": "node ./scripts/schema-to-migration.mjs && pnpx supabase db push",
     "lint": "pnpm -r run lint",

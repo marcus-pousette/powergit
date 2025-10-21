@@ -621,9 +621,9 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
 
   return (
     <DaemonAuthContext.Provider value={daemonSnapshot}>
-      <PowerSyncContext.Provider value={rawTablesReady ? powerSync : null}>
-        {rawTablesReady ? children : null}
-      </PowerSyncContext.Provider>
+      {rawTablesReady && powerSync ? (
+        <PowerSyncContext.Provider value={powerSync}>{children}</PowerSyncContext.Provider>
+      ) : null}
     </DaemonAuthContext.Provider>
   )
 }
