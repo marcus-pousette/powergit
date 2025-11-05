@@ -12,8 +12,15 @@ import type { Database } from '@ps/schema'
 const MonacoEditor = React.lazy(() => import('@monaco-editor/react'))
 const decoder = 'TextDecoder' in globalThis ? new TextDecoder('utf-8') : null
 
+type FileRouteSearch = {
+  branch?: string
+}
+
 export const Route = createFileRoute('/org/$orgId/repo/$repoId/files' as any)({
   component: Files,
+  validateSearch: (search: Record<string, unknown>): FileRouteSearch => ({
+    branch: typeof search.branch === 'string' && search.branch.length > 0 ? search.branch : undefined,
+  }),
 })
 
 type BranchRow = {
@@ -103,6 +110,8 @@ function sortFallbackTree(node: FallbackNode) {
 
 function Files() {
   const { orgId, repoId } = Route.useParams()
+  const navigate = Route.useNavigate()
+  const { branch: branchParam } = Route.useSearch()
   useRepoStreams(orgId, repoId)
   const fixture = useRepoFixture(orgId, repoId)
 
@@ -194,7 +203,6 @@ function Files() {
   const hasFallbackTree = fallbackTree.type === 'directory' && fallbackTree.children.length > 0
 
   const storageBase = React.useMemo(() => `powersync-file-explorer/${orgId}/${repoId}`, [orgId, repoId])
-  const branchStorageKey = `${storageBase}/branch`
   const resolvePathKey = React.useCallback(
     (branchName: string | null | undefined) =>
       `${storageBase}/branches/${encodeURIComponent(branchName ?? '__no_branch__')}/path`,
@@ -207,41 +215,40 @@ function Files() {
   const [selectedCommit, setSelectedCommit] = React.useState<string | null>(null)
 
   React.useEffect(() => {
-    if (selectedBranch) return
-    const storedName =
-      typeof window !== 'undefined'
-        ? (() => {
-            try {
-              return window.localStorage.getItem(branchStorageKey)
-            } catch {
-              return null
-            }
-          })()
-        : null
-    const storedBranch = storedName ? branchOptions.find((opt) => opt.name === storedName) ?? null : null
-    const next = storedBranch ?? defaultBranch
-    if (next) {
+    if (!branchOptions.length) return
+    const branchExists = branchParam ? branchOptions.some((opt) => opt.name === branchParam) : false
+    const fallback = defaultBranch?.name
+    if ((!branchExists || !branchParam) && fallback) {
+      void navigate({
+        to: '.',
+        search: (prev) => ({
+          ...prev,
+          branch: fallback,
+        }),
+        replace: true,
+      })
+    }
+  }, [branchParam, branchOptions, defaultBranch, navigate])
+
+  React.useEffect(() => {
+    if (!branchOptions.length) {
+      if (selectedBranch !== null) setSelectedBranch(null)
+      if (selectedCommit !== null) setSelectedCommit(null)
+      return
+    }
+    const branchExists = branchParam ? branchOptions.some((opt) => opt.name === branchParam) : false
+    const resolvedName = branchExists ? branchParam! : defaultBranch?.name ?? null
+    if (!resolvedName) {
+      if (selectedBranch !== null) setSelectedBranch(null)
+      if (selectedCommit !== null) setSelectedCommit(null)
+      return
+    }
+    const next = branchOptions.find((opt) => opt.name === resolvedName) ?? null
+    if (next && (!selectedBranch || selectedBranch.name !== next.name)) {
       setSelectedBranch(next)
       setSelectedCommit(next.target_sha)
     }
-  }, [selectedBranch, branchOptions, defaultBranch, branchStorageKey])
-
-  React.useEffect(() => {
-    if (typeof window === 'undefined') return
-    if (selectedBranch?.name) {
-      try {
-        window.localStorage.setItem(branchStorageKey, selectedBranch.name)
-      } catch {
-        // ignore storage errors
-      }
-    } else {
-      try {
-        window.localStorage.removeItem(branchStorageKey)
-      } catch {
-        // ignore storage errors
-      }
-    }
-  }, [selectedBranch, branchStorageKey])
+  }, [branchParam, branchOptions, defaultBranch, selectedBranch, selectedCommit])
 
   const loadStoredPath = React.useCallback(
     (branchName: string | null | undefined) => {
@@ -560,6 +567,13 @@ function Files() {
         setSelectedBranch(next)
         setSelectedCommit(next?.target_sha ?? null)
         setPendingPath(loadStoredPath(next?.name ?? null))
+        void navigate({
+          to: '.',
+          search: (prev) => ({
+            ...prev,
+            branch: next?.name ?? undefined,
+          }),
+        })
       }}
       className="border border-gray-300 rounded px-2 py-1 text-sm"
       data-testid="branch-selector"

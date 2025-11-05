@@ -159,21 +159,22 @@ test.describe('Explorer repo lists', () => {
     )
 
     const tree = page.getByTestId('file-explorer-tree')
-    await expect(tree).toContainText('(0/3)')
-    await expect(tree).toContainText('(1/3)')
+    await expect(tree).toContainText('Repository content is syncing')
     await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
   })
 
-  test('remembers the last selected branch across reloads', async ({ page }) => {
+  test('persists the selected branch in the URL', async ({ page }) => {
     await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
     await setRepoFixture(page, REPO_FIXTURE)
 
     const selector = page.getByTestId('branch-selector')
     await expect(selector).toContainText('main')
     await selector.selectOption('develop')
-    await expect(selector).toHaveValue('develop')
+    await expect(page).toHaveURL(/branch=develop/)
+
     await page.reload()
     await setRepoFixture(page, REPO_FIXTURE)
+    await expect(page).toHaveURL(/branch=develop/)
     await expect(page.getByTestId('branch-selector')).toHaveValue('develop')
   })
 
