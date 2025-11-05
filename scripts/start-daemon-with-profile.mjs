@@ -3,6 +3,14 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  resolveDaemonBaseUrl,
+  isDaemonResponsive,
+  fetchDaemonStatus,
+  shouldRefreshDaemonStatus,
+  runGuestLogin,
+} from './dev-shared.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -68,6 +76,28 @@ function launchDaemon(env, passThrough) {
     console.error('[dev:daemon] failed to start daemon:', error);
     process.exit(1);
   });
+
+  return child;
+}
+
+async function refreshDaemonAfterLaunch(env) {
+  const baseUrl = resolveDaemonBaseUrl(env);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await isDaemonResponsive(baseUrl)) {
+      break;
+    }
+    await delay(500);
+  }
+
+  const status = await fetchDaemonStatus(baseUrl);
+  if (!status || shouldRefreshDaemonStatus(status)) {
+    try {
+      await runGuestLogin({ env, repoRoot });
+      console.info('[dev:daemon] refreshed daemon guest credentials.');
+    } catch (error) {
+      console.warn('[dev:daemon] guest credential refresh failed:', error?.message ?? error);
+    }
+  }
 }
 
 async function main() {
@@ -93,7 +123,11 @@ async function main() {
   }
 
   const combinedEnv = { ...process.env, ...envResult?.combinedEnv };
-  launchDaemon(combinedEnv, passThrough);
+  if (!combinedEnv.POWERSYNC_SUPABASE_WRITER_FAILURE_THRESHOLD) {
+    combinedEnv.POWERSYNC_SUPABASE_WRITER_FAILURE_THRESHOLD = '20';
+  }
+  const child = launchDaemon(combinedEnv, passThrough);
+  void refreshDaemonAfterLaunch(combinedEnv);
 }
 
 main().catch((error) => {

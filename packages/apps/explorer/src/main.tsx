@@ -6,6 +6,8 @@ import { routeTree } from './routeTree.gen'
 import './index.css'
 import { PowerSyncProvider } from './ps/powersync'
 import { SupabaseAuthProvider } from './ps/auth-context'
+import { NoticeProvider } from './ui/notices'
+import { StatusProvider } from './ui/status-provider'
 
 const router = createRouter({ routeTree })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
@@ -15,11 +17,15 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
 }
 
 const app = (
-  <SupabaseAuthProvider>
-    <PowerSyncProvider>
-      <RouterProvider router={router} />
-    </PowerSyncProvider>
-  </SupabaseAuthProvider>
+  <NoticeProvider>
+    <StatusProvider>
+      <SupabaseAuthProvider>
+        <PowerSyncProvider>
+          <RouterProvider router={router} />
+        </PowerSyncProvider>
+      </SupabaseAuthProvider>
+    </StatusProvider>
+  </NoticeProvider>
 )
 
 const root = import.meta.env.VITE_DISABLE_STRICT_MODE === 'true' ? (

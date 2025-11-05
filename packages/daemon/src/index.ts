@@ -18,6 +18,56 @@ import { ensureLocalSchema } from './local-schema.js';
 import { SupabaseWriter } from './supabase-writer.js';
 import { GithubImportManager } from './importer.js';
 
+function normalizeAuthToken(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAuthEndpoint(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+  try {
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    const payload = JSON.parse(json);
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function getJwtExpirationMs(token: string): number | null {
+  const payload = decodeJwtPayload(token);
+  if (!payload) return null;
+  const exp = (payload as { exp?: unknown }).exp;
+  if (typeof exp !== 'number') return null;
+  const expires = exp * 1000;
+  return Number.isFinite(expires) ? expires : null;
+}
+
+function isJwtExpired(token: string | null | undefined, skewMs = 0): boolean {
+  if (!token) return false;
+  const expiresAt = getJwtExpirationMs(token);
+  if (!expiresAt) return false;
+  return expiresAt <= Date.now() + Math.max(0, skewMs);
+}
+
+function formatJwtExpirationIso(token: string | null | undefined): string | null {
+  if (!token) return null;
+  const expiresAt = getJwtExpirationMs(token);
+  if (!expiresAt) return null;
+  const iso = new Date(expiresAt).toISOString();
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+
 function normalizePackBytes(raw: unknown): { base64: string; size: number } | null {
   if (typeof raw !== 'string' || raw.length === 0) return null;
   const trimmed = raw.trim();
@@ -233,10 +283,19 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   await assertPortAvailable(config.host, config.port);
   console.info(`[powersync-daemon] starting (db: ${config.dbPath})`);
 
-  let authToken: string | null = config.token ?? null;
-  let authEndpoint: string | null = config.endpoint ?? null;
+  let authToken: string | null = normalizeAuthToken(config.token);
+  let authEndpoint: string | null = normalizeAuthEndpoint(config.endpoint);
   let authExpiresAt: string | null = null;
   let authMetadata: Record<string, unknown> | null = null;
+
+  if (authToken) {
+    authExpiresAt = formatJwtExpirationIso(authToken);
+    if (isJwtExpired(authToken, 5_000)) {
+      console.warn('[powersync-daemon] cached PowerSync token is expired; clearing saved credentials.');
+      authToken = null;
+      authExpiresAt = null;
+    }
+  }
 
   const buildAuthContext = (): Record<string, unknown> | null => {
     const context: Record<string, unknown> = {};
@@ -302,10 +361,14 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       },
     });
     supabaseWriter.setAccessToken(authToken);
-    if (authToken) {
+    if (authToken && !isJwtExpired(authToken, 5_000)) {
       supabaseWriter.start();
       console.info(
         `[powersync-daemon] Supabase writer started (${usingServiceRole ? 'service-role key' : 'anon/public key'})`,
+      );
+    } else if (authToken) {
+      console.warn(
+        '[powersync-daemon] Supabase writer initialised but PowerSync token is expired; waiting for refreshed credentials before starting.',
       );
     } else {
       console.info(
@@ -339,6 +402,11 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   const scheduleConnect = (reason: string) => {
     if (!authEndpoint || !authToken) {
       console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — credentials missing`);
+      connected = false;
+      return;
+    }
+    if (isJwtExpired(authToken, 5_000)) {
+      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — token expired; await refreshed credentials.`);
       connected = false;
       return;
     }
@@ -455,27 +523,47 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       };
     },
     handleAuthGuest: async (payload) => {
-      const tokenCandidate =
-        typeof payload?.token === 'string' ? payload.token.trim() : '';
-      const endpointCandidate =
-        typeof payload?.endpoint === 'string' ? payload.endpoint.trim() : '';
-
-      if (tokenCandidate) {
-        authToken = tokenCandidate;
-        supabaseWriter?.setAccessToken(authToken);
-      }
-      if (endpointCandidate) {
-        authEndpoint = endpointCandidate;
+      const endpointField = (payload as { endpoint?: unknown } | null | undefined)?.endpoint;
+      if (typeof endpointField === 'string') {
+        authEndpoint = normalizeAuthEndpoint(endpointField);
+      } else if (endpointField !== undefined) {
+        authEndpoint = null;
       }
 
-      const expiresAtCandidate =
-        typeof payload?.expiresAt === 'string' ? payload.expiresAt : null;
-      authExpiresAt = expiresAtCandidate;
+      const tokenField = (payload as { token?: unknown } | null | undefined)?.token;
+      if (typeof tokenField === 'string') {
+        authToken = normalizeAuthToken(tokenField);
+      } else if (tokenField !== undefined) {
+        authToken = null;
+      }
+
+      const expiresAtField =
+        typeof (payload as { expiresAt?: unknown } | null | undefined)?.expiresAt === 'string'
+          ? ((payload as { expiresAt?: string }).expiresAt ?? null)
+          : null;
+
+      authExpiresAt = authToken ? expiresAtField ?? formatJwtExpirationIso(authToken) : null;
 
       const metadataCandidate = payload?.metadata;
       if (metadataCandidate && typeof metadataCandidate === 'object' && !Array.isArray(metadataCandidate)) {
         authMetadata = { ...metadataCandidate };
       }
+
+      if (authToken && isJwtExpired(authToken, 5_000)) {
+        console.warn('[powersync-daemon] received expired PowerSync token from guest login; waiting for refresh.');
+        const context = buildAuthContext();
+        authToken = null;
+        authExpiresAt = null;
+        supabaseWriter?.setAccessToken(null);
+        connected = false;
+        return {
+          status: 'auth_required',
+          reason: 'Received expired PowerSync token; rerun guest login.',
+          context,
+        };
+      }
+
+      supabaseWriter?.setAccessToken(authToken);
 
       if (!authEndpoint || !authToken) {
         return {
@@ -486,8 +574,9 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       }
 
       console.info('[powersync-daemon] accepted guest credentials');
-      supabaseWriter?.setAccessToken(authToken);
-      supabaseWriter?.start();
+      if (!isJwtExpired(authToken, 5_000)) {
+        supabaseWriter?.start();
+      }
       scheduleConnect('guest-auth');
       const readyTimeoutMs = Number.parseInt(
         process.env.POWERSYNC_DAEMON_AUTH_READY_TIMEOUT_MS ?? '10000',

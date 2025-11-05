@@ -16,6 +16,8 @@ import {
 } from './daemon-client'
 import { getAccessToken } from './supabase'
 import { RAW_TABLE_SPECS } from '@shared/core/powersync/raw-tables'
+import { useAppNotices } from '../ui/notices'
+import { useStatusRegistry } from '../ui/status-provider'
 
 declare global {
   interface Window {
@@ -277,6 +279,8 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
   const { status, session } = useSupabaseAuth()
   const accessToken = session?.access_token ?? null
   const preferDaemon = isDaemonPreferred()
+  const { showNotice, dismissNoticeByKey } = useAppNotices()
+  const { publishStatus, dismissStatus } = useStatusRegistry()
   const [daemonStatus, setDaemonStatus] = React.useState<DaemonAuthStatus | null>(null)
   const [daemonReady, setDaemonReady] = React.useState(false)
   const [rawTablesReady, setRawTablesReady] = React.useState(false)
@@ -356,18 +360,140 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
 
   const runRawTableMigration = React.useCallback(async () => {
     await waitForPendingPowerSyncClose()
-    await powerSync.init()
-    await powerSync.writeTransaction(async (tx) => {
-      try {
-        await tx.execute('SELECT powersync_disable_drop_view()')
-      } catch (error) {
-        if (import.meta.env.DEV) {
-          console.debug('[PowerSync] disable drop view hook unavailable', error)
-        }
-      }
-    })
+    try {
+      await powerSync.init()
+    } catch (error) {
+      console.warn('[PowerSync] init failed before raw table migration', error)
+      throw error
+    }
     await performRawTableMigration(powerSync)
   }, [powerSync])
+
+  React.useEffect(() => {
+    if (!preferDaemon) {
+      dismissNoticeByKey('daemon-status')
+      dismissStatus('daemon-auth')
+      return
+    }
+
+    const status = daemonStatus
+    if (!status) {
+      const message = (
+        <div className="space-y-1">
+          <p>The explorer could not reach the local PowerSync daemon. Start it to enable Git sync features.</p>
+          <p className="text-xs text-slate-600">
+            Try running <code>pnpm --filter @app/explorer dev</code> or <code>pnpm --filter @svc/daemon start</code>.
+          </p>
+        </div>
+      )
+      showNotice({
+        key: 'daemon-status',
+        variant: 'error',
+        title: 'PowerSync daemon unavailable',
+        message,
+        dismissible: true,
+      })
+      publishStatus({
+        key: 'daemon-auth',
+        tone: 'error',
+        message,
+        order: 10,
+      })
+      return
+    }
+
+    if (status.status === 'ready') {
+      dismissNoticeByKey('daemon-status')
+      dismissStatus('daemon-auth')
+      return
+    }
+
+    if (status.status === 'pending') {
+      const challenge = extractDeviceChallenge(status)
+      const message = (
+        <div className="space-y-1">
+          <div>{status.reason ?? 'Waiting for daemon authentication to complete…'}</div>
+          {challenge ? (
+            <div className="text-xs text-slate-600">
+              Device code: <code>{challenge.challengeId}</code>
+              {challenge.verificationUrl ? (
+                <>
+                  {' '}
+                  ·{' '}
+                  <a href={challenge.verificationUrl} target="_blank" rel="noreferrer" className="underline">
+                    Open verification URL
+                  </a>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      )
+      showNotice({
+        key: 'daemon-status',
+        variant: 'warning',
+        title: 'PowerSync daemon waiting for login',
+        message,
+        dismissible: true,
+      })
+      publishStatus({
+        key: 'daemon-auth',
+        tone: 'warning',
+        message,
+        order: 10,
+      })
+      return
+    }
+
+    if (status.status === 'auth_required') {
+      const message = (
+        <div className="space-y-1">
+          <div>{status.reason ?? 'Run `psgit login --guest` or complete the daemon sign-in flow to proceed.'}</div>
+        </div>
+      )
+      showNotice({
+        key: 'daemon-status',
+        variant: 'warning',
+        title: 'PowerSync daemon requires authentication',
+        message,
+        dismissible: true,
+      })
+      publishStatus({
+        key: 'daemon-auth',
+        tone: 'error',
+        message,
+        order: 10,
+      })
+      return
+    }
+
+    if (status.status === 'error') {
+      const message = status.reason ?? 'The daemon reported an error while fetching credentials.'
+      showNotice({
+        key: 'daemon-status',
+        variant: 'error',
+        title: 'PowerSync daemon error',
+        message,
+        dismissible: true,
+      })
+      publishStatus({
+        key: 'daemon-auth',
+        tone: 'error',
+        message,
+        order: 10,
+      })
+      return
+    }
+
+    dismissStatus('daemon-auth')
+  }, [
+    daemonStatus,
+    dismissNoticeByKey,
+    dismissStatus,
+    preferDaemon,
+    publishStatus,
+    showNotice,
+  ])
 
   React.useEffect(() => {
     if (isPowerSyncDisabled) {

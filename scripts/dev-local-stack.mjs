@@ -12,6 +12,11 @@ import { inspect } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Client } from 'pg'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import {
+  resolveDaemonBaseUrl,
+  fetchDaemonStatus,
+  shouldRefreshDaemonStatus,
+} from './dev-shared.mjs'
 
 const STACK_ENV_FILENAME = '.env.powersync-stack'
 const DEFAULT_ORG = process.env.POWERSYNC_STACK_ORG ?? 'demo'
@@ -587,47 +592,47 @@ async function refreshDaemonCredentials(env) {
     return false
   }
 
-  const daemonBaseUrl = (env.daemonUrl ?? process.env.POWERSYNC_DAEMON_URL ?? 'http://127.0.0.1:5030').replace(/\/+$/, '')
-
+  const daemonBaseUrl = resolveDaemonBaseUrl({
+    POWERSYNC_DAEMON_URL: env.daemonUrl ?? process.env.POWERSYNC_DAEMON_URL,
+    POWERSYNC_DAEMON_ENDPOINT: env.powersyncEndpoint ?? process.env.POWERSYNC_DAEMON_ENDPOINT,
+  })
   try {
-    delete process.env.POWERSYNC_DAEMON_TOKEN
-    await runCommand('pnpm', ['--filter', '@pkg/cli', 'cli', 'login', '--guest'], {
-      stdio: ['inherit', 'pipe', 'pipe'],
-    })
-  } catch (error) {
-    warnLog(`[dev:stack] Failed to refresh daemon guest credentials: ${error?.message ?? error}`)
-    return false
-  }
-
-  try {
-    const response = await fetch(`${daemonBaseUrl}/auth/status`)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+    let status = await fetchDaemonStatus(daemonBaseUrl)
+    if (!status || shouldRefreshDaemonStatus(status)) {
+      try {
+        delete process.env.POWERSYNC_DAEMON_TOKEN
+        await runCommand('pnpm', ['--filter', '@pkg/cli', 'cli', 'login', '--guest'], {
+          stdio: ['inherit', 'pipe', 'pipe'],
+        })
+      } catch (error) {
+        warnLog(`[dev:stack] Failed to refresh daemon guest credentials: ${error?.message ?? error}`)
+        return false
+      }
+      status = await fetchDaemonStatus(daemonBaseUrl)
     }
-    const payload = (await response.json()) ?? null
-    if (!payload || payload.status !== 'ready' || typeof payload.token !== 'string' || payload.token.length === 0) {
+    if (!status || status.status !== 'ready') {
       warnLog('[dev:stack] Daemon auth status did not return a ready token; continuing with service-role fallback.')
       return false
     }
-
-    env.daemonToken = payload.token
-    process.env.POWERSYNC_DAEMON_TOKEN = payload.token
-
-    const endpointCandidate =
-      payload.context && typeof payload.context.endpoint === 'string' && payload.context.endpoint.length > 0
-        ? payload.context.endpoint
-        : null
-    if (endpointCandidate) {
-      env.powersyncEndpoint = endpointCandidate
-      process.env.POWERSYNC_ENDPOINT = endpointCandidate
-      env.remoteUrl = `powersync::${endpointCandidate.replace(/\/$/, '')}/orgs/${DEFAULT_ORG}/repos/${DEFAULT_REPO}`
-    }
-
+    applyDaemonStatusToStackEnv(env, status)
     infoLog('[dev:stack] Refreshed daemon guest token from /auth/status.')
     return true
   } catch (error) {
     warnLog('[dev:stack] Unable to verify daemon auth status after login', error?.message ?? error)
     return false
+  }
+}
+
+function applyDaemonStatusToStackEnv(env, status) {
+  if (!status || status.status !== 'ready') return
+  env.daemonToken = status.token
+  process.env.POWERSYNC_DAEMON_TOKEN = status.token
+  const endpoint =
+    status.context && typeof status.context.endpoint === 'string' ? status.context.endpoint.trim() : null
+  if (endpoint) {
+    env.powersyncEndpoint = endpoint
+    process.env.POWERSYNC_ENDPOINT = endpoint
+    env.remoteUrl = `powersync::${endpoint.replace(/\/$/, '')}/orgs/${DEFAULT_ORG}/repos/${DEFAULT_REPO}`
   }
 }
 

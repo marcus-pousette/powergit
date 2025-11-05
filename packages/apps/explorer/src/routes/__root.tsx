@@ -3,15 +3,14 @@ import * as React from 'react'
 import { Link, Outlet, useLocation, useNavigate } from '@tanstack/react-router'
 import { useStatus } from '@powersync/react'
 import { signOut } from '@ps/supabase'
-import { extractDeviceChallenge, isDaemonPreferred, notifyDaemonLogout } from '@ps/daemon-client'
+import { isDaemonPreferred, notifyDaemonLogout } from '@ps/daemon-client'
 import { useSupabaseAuth } from '@ps/auth-context'
-import { useDaemonAuthSnapshot } from '@ps/powersync'
+import { StatusViewport } from '../ui/status-provider'
 
 export const Route = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const { status: authStatus, session } = useSupabaseAuth()
-  const daemonAuth = useDaemonAuthSnapshot()
   const status = useStatus()
   const [signingOut, setSigningOut] = React.useState(false)
   const preferDaemon = React.useMemo(() => isDaemonPreferred(), [])
@@ -20,40 +19,6 @@ export const Route = () => {
     return path.startsWith('/auth') || path.startsWith('/reset-password')
   }, [location.pathname])
   const pathname = location.pathname ?? ''
-  const daemonNeedsAttention = daemonAuth.enabled && daemonAuth.status && daemonAuth.status.status !== 'ready'
-  const daemonMessage = React.useMemo<React.ReactNode | null>(() => {
-    if (!daemonNeedsAttention) return null
-    const status = daemonAuth.status!
-    const challenge = extractDeviceChallenge(status)
-    if (status.status === 'auth_required') {
-      return status.reason ?? 'Daemon requires authentication. Run `psgit login` or complete the daemon sign-in flow.'
-    }
-    if (status.status === 'pending') {
-      const message = status.reason ?? 'Waiting for daemon authentication to complete…'
-      if (!challenge) return message
-      return (
-        <div className="space-y-1">
-          <div>{message}</div>
-          <div className="text-xs text-amber-900/70">
-            Device code: <code>{challenge.challengeId}</code>
-          </div>
-          {challenge.verificationUrl ? (
-            <div className="text-xs">
-              Open{' '}
-              <a className="underline" href={challenge.verificationUrl} target="_blank" rel="noreferrer">
-                {challenge.verificationUrl}
-              </a>{' '}
-              to approve the daemon.
-            </div>
-          ) : null}
-        </div>
-      )
-    }
-    if (status.status === 'error') {
-      return status.reason ?? 'Daemon reported an authentication error.'
-    }
-    return null
-  }, [daemonNeedsAttention, daemonAuth.status])
 
   React.useEffect(() => {
     if (authStatus === 'unauthenticated' && !isAuthRoute && pathname !== '/auth') {
@@ -123,14 +88,8 @@ export const Route = () => {
   }
 
   const userLabel = session?.user?.email ?? session?.user?.id ?? 'Signed in'
-
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
-      {daemonMessage ? (
-        <div className="rounded-md border border-amber-300 bg-amber-100 px-4 py-3 text-sm text-amber-900 space-y-1" role="status">
-          {daemonMessage}
-        </div>
-      ) : null}
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Repo Explorer</h1>
@@ -160,6 +119,7 @@ export const Route = () => {
           </div>
         </div>
       </header>
+      <StatusViewport />
       <Outlet />
     </div>
   )

@@ -4,6 +4,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { loadProfileEnvironment } from '../../../cli/src/profile-env.js'
+import {
+  normalizeBaseUrl,
+  resolveDaemonBaseUrl,
+  isDaemonResponsive,
+  stopDaemon,
+  refreshDaemonToken,
+  fetchDaemonStatus,
+  shouldRefreshDaemonStatus,
+} from '../../../../scripts/dev-shared.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -58,40 +67,21 @@ function applyDefaults(env) {
 }
 
 let daemonProcess = null
-
-function normalizeBaseUrl(value) {
-  return value.replace(/\/+$/, '')
-}
-
-async function isDaemonResponsive(baseUrl) {
-  const target = `${normalizeBaseUrl(baseUrl)}/health`
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 2000)
-  try {
-    const response = await fetch(target, { signal: controller.signal })
-    clearTimeout(timeout)
-    return response.ok
-  } catch {
-    clearTimeout(timeout)
-    return false
-  }
-}
-
-async function startDaemonIfNeeded(env, profileName) {
+async function startDaemonIfNeeded(env, profileName, { forceRestart = false } = {}) {
   const autostart =
     (env.POWERSYNC_DAEMON_AUTOSTART ?? process.env.POWERSYNC_DAEMON_AUTOSTART ?? 'true').toLowerCase() !== 'false'
   if (!autostart) {
+    console.log('[explorer] daemon autostart disabled; skipping daemon launch')
     return
   }
 
-  const baseUrl =
-    env.POWERSYNC_DAEMON_URL ??
-    env.POWERSYNC_DAEMON_ENDPOINT ??
-    process.env.POWERSYNC_DAEMON_URL ??
-    process.env.POWERSYNC_DAEMON_ENDPOINT ??
-    'http://127.0.0.1:5030'
+  const baseUrl = resolveDaemonBaseUrl(env)
 
-  if (await isDaemonResponsive(baseUrl)) {
+  if (forceRestart && (await isDaemonResponsive(baseUrl))) {
+    console.info('[explorer] restarting daemon to ensure a fresh session')
+    await stopDaemon(baseUrl)
+    await delay(500)
+  } else if (!forceRestart && (await isDaemonResponsive(baseUrl))) {
     console.info(`[explorer] daemon already running at ${baseUrl}`)
     return
   }
@@ -128,6 +118,11 @@ async function startDaemonIfNeeded(env, profileName) {
   throw new Error('Daemon did not become ready in time.')
 }
 
+async function refreshDaemonTokenIfNeeded(env) {
+  const { status } = await refreshDaemonToken({ env, repoRoot, logger: console })
+  applyDaemonStatusToEnv(env, status)
+}
+
 function attachCleanup() {
   const cleanup = () => {
     if (daemonProcess && daemonProcess.exitCode === null) {
@@ -143,6 +138,21 @@ function attachCleanup() {
     cleanup()
     process.exit(143)
   })
+}
+
+function applyDaemonStatusToEnv(env, status) {
+  if (!status || status.status !== 'ready') return
+  env.POWERSYNC_DAEMON_TOKEN = status.token
+  process.env.POWERSYNC_DAEMON_TOKEN = status.token
+  const endpoint =
+    status.context && typeof status.context.endpoint === 'string' ? status.context.endpoint.trim() : null
+  if (endpoint) {
+    env.POWERSYNC_DAEMON_ENDPOINT = endpoint
+    process.env.POWERSYNC_DAEMON_ENDPOINT = endpoint
+    if (!env.VITE_POWERSYNC_ENDPOINT || env.VITE_POWERSYNC_ENDPOINT.trim().length === 0) {
+      env.VITE_POWERSYNC_ENDPOINT = endpoint
+    }
+  }
 }
 
 async function main() {
@@ -165,8 +175,29 @@ async function main() {
   applyDefaults(mergedEnv)
 
   if (!options.printEnv) {
+    const daemonBaseUrl = resolveDaemonBaseUrl(mergedEnv)
     try {
-      await startDaemonIfNeeded(mergedEnv, profileResult.profile?.name)
+      let status = await fetchDaemonStatus(daemonBaseUrl)
+      if (!status || shouldRefreshDaemonStatus(status)) {
+        if (!(await isDaemonResponsive(daemonBaseUrl))) {
+          await startDaemonIfNeeded(mergedEnv, profileResult.profile?.name)
+        }
+        await refreshDaemonTokenIfNeeded(mergedEnv)
+        status = await fetchDaemonStatus(daemonBaseUrl)
+      } else {
+        applyDaemonStatusToEnv(mergedEnv, status)
+      }
+
+      if (!status || status.status !== 'ready') {
+        await startDaemonIfNeeded(mergedEnv, profileResult.profile?.name, { forceRestart: true })
+        await refreshDaemonTokenIfNeeded(mergedEnv)
+        status = await fetchDaemonStatus(daemonBaseUrl)
+      }
+
+      if (!status || status.status !== 'ready' || !(await isDaemonResponsive(daemonBaseUrl))) {
+        throw new Error('PowerSync daemon is not reachable after restart attempts.')
+      }
+      applyDaemonStatusToEnv(mergedEnv, status)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error(`[explorer] ${message}`)

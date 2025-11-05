@@ -6,13 +6,15 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "start:local": "pnpm --workspace-root run dev:daemon -- --profile local-dev",
+    "stop:local": "kill $(lsof -t -i:5030)",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'stub'",
     "test": "vitest run"
   },
   "dependencies": {
     "@powersync/common": "1.40.0",
-    "@powersync/node": "0.11.1",
+    "@powersync/node": "0.12.0",
     "@shared/core": "workspace:*",
     "@supabase/supabase-js": "^2.48.1",
     "better-sqlite3": "^12.4.1",

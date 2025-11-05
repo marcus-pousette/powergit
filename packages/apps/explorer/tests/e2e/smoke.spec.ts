@@ -1,6 +1,7 @@
 import { test, expect } from './diagnostics'
 import { BASE_URL } from 'playwright.config'
 import { clearRepoFixtures, installDaemonAuthStub, installSupabaseMock, setRepoFixture, type RepoFixturePayload } from './utils'
+import type { PackRow } from '../../src/ps/git-store'
 
 const ORG_ID = 'acme'
 const REPO_ID = 'infra'
@@ -59,6 +60,9 @@ test.describe('Explorer repo lists', () => {
 
   test.afterEach(async ({ page }) => {
     await clearRepoFixtures(page)
+    await page.evaluate(() => {
+      localStorage.clear()
+    })
   })
 
   test('shows repo branches from fixture data', async ({ page }) => {
@@ -93,27 +97,16 @@ test.describe('Explorer repo lists', () => {
     await expect(secondCommit).toContainText('Ada Lovelace')
   })
 
-test('renders file explorer tree with preview placeholder', async ({ page }) => {
-  await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
-  await page.route('https://raw.githubusercontent.com/**', async (route) => {
-    await route.abort('failed')
-  })
+  test('renders file explorer skeleton while packs index', async ({ page }) => {
+    await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
   await setRepoFixture(page, REPO_FIXTURE)
 
-  await expect(page.getByTestId('file-explorer-heading')).toBeVisible()
-  await expect(page.getByTestId('file-explorer-tree')).toBeVisible()
-  await expect(page.getByTestId('file-viewer-placeholder')).toBeVisible()
-
-  const directoryItems = page.getByTestId('file-tree-directory')
-  await expect(directoryItems.filter({ hasText: 'src' })).toHaveCount(1)
-
-  const fileItems = page.getByTestId('file-tree-file')
-  await expect(fileItems.filter({ hasText: 'replication.ts' })).toHaveCount(1)
-  await expect(fileItems.filter({ hasText: 'README.md' })).toHaveCount(1)
-
-  await fileItems.filter({ hasText: 'replication.ts' }).first().click()
-  await expect(page.getByTestId('file-viewer-status')).toContainText('Unable to load file content')
-})
+    const heading = page.getByRole('heading', { name: `Repository files (${ORG_ID}/${REPO_ID})` })
+    await expect(heading).toBeVisible()
+    await expect(page.getByTestId('branch-selector')).toBeVisible()
+    await expect(page.getByTestId('file-explorer-tree')).toContainText('Repository content is syncing')
+    await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
+  })
 
   test('updates branch list when fixture changes', async ({ page }) => {
     await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/branches`)
@@ -135,5 +128,104 @@ test('renders file explorer tree with preview placeholder', async ({ page }) => 
     await expect(branchItems.first()).toContainText('hotfix')
     await expect(branchItems.last()).toContainText('release')
     await expect(branchItems.filter({ hasText: 'main' })).toHaveCount(0)
+  })
+
+  test('shows sync progress counts while git packs index', async ({ page }) => {
+    await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
+    await setRepoFixture(page, REPO_FIXTURE)
+
+    await page.evaluate(
+      async ({ orgId, repoId }) => {
+        const store = (window as typeof window & { __powersyncGitStore?: unknown }).__powersyncGitStore as any
+        if (!store) throw new Error('gitStore instance not found on window')
+        store.indexedPacks = new Set()
+        store.processPack = async function process(pack: PackRow) {
+          this.indexedPacks.add(pack.pack_oid)
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        store.yieldToBrowser = async () => {}
+        const now = new Date().toISOString()
+        const mkPack = (suffix: string) => ({
+          id: `pack-${suffix}`,
+          org_id: orgId,
+          repo_id: repoId,
+          pack_oid: `pack-${suffix}`,
+          pack_bytes: 'Zg==',
+          created_at: now,
+        })
+        void store.indexPacks([mkPack('one'), mkPack('two'), mkPack('three')])
+      },
+      { orgId: ORG_ID, repoId: REPO_ID },
+    )
+
+    const tree = page.getByTestId('file-explorer-tree')
+    await expect(tree).toContainText('(0/3)')
+    await expect(tree).toContainText('(1/3)')
+    await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
+  })
+
+  test('remembers the last selected branch across reloads', async ({ page }) => {
+    await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
+    await setRepoFixture(page, REPO_FIXTURE)
+
+    const selector = page.getByTestId('branch-selector')
+    await expect(selector).toContainText('main')
+    await selector.selectOption('develop')
+    await expect(selector).toHaveValue('develop')
+    await page.reload()
+    await setRepoFixture(page, REPO_FIXTURE)
+    await expect(page.getByTestId('branch-selector')).toHaveValue('develop')
+  })
+
+  test('offers a download CTA for binary blobs in the viewer', async ({ page }) => {
+    await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
+    await setRepoFixture(page, {
+      ...REPO_FIXTURE,
+      fileChanges: [
+        { commit_sha: REPO_FIXTURE.commits![0].sha, path: 'binary.dat', additions: 10, deletions: 0 },
+      ],
+    })
+
+    await page.evaluate(
+      async ({ orgId, repoId }) => {
+        const store = (window as typeof window & { __powersyncGitStore?: unknown }).__powersyncGitStore as any
+        if (!store) throw new Error('gitStore instance not found on window')
+        store.indexedPacks = new Set()
+        store.processPack = async function process(pack: PackRow) {
+          this.indexedPacks.add(pack.pack_oid)
+        }
+        store.yieldToBrowser = async () => {}
+        store.getCommitTree = async () => ({ treeOid: 'root' })
+        const entries = [
+          { type: 'blob', path: 'binary.dat', name: 'binary.dat', oid: 'oid-binary', mode: '100644' },
+          { type: 'blob', path: 'notes.txt', name: 'notes.txt', oid: 'oid-text', mode: '100644' },
+        ]
+        store.readTreeAtPath = async () => entries
+        store.readTree = async () => entries
+        store.readFile = async (_commit: string, path: string) => {
+          const size = path === 'binary.dat' ? 1_500_000 : 200
+          const buffer = new Uint8Array(size)
+          return { content: buffer, oid: path === 'binary.dat' ? 'oid-binary' : 'oid-text' }
+        }
+        await store.indexPacks([
+          {
+            id: 'pack-binary',
+            org_id: orgId,
+            repo_id: repoId,
+            pack_oid: 'pack-binary',
+            pack_bytes: 'Zg==',
+            created_at: new Date().toISOString(),
+          },
+        ])
+      },
+      { orgId: ORG_ID, repoId: REPO_ID },
+    )
+
+    const binaryFile = page.getByTestId('file-tree-file').filter({ hasText: 'binary.dat' })
+    await binaryFile.click()
+
+    const downloadButton = page.getByRole('button', { name: 'Download blob' })
+    await expect(downloadButton).toBeVisible()
+    await expect(page.getByTestId('file-viewer-status')).toContainText('binary.dat')
   })
 })

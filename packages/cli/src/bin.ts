@@ -229,12 +229,36 @@ function parseJwtPayload(token: string): Record<string, unknown> | null {
   if (parts.length < 2) return null
   try {
     const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-    const json = Buffer.from(normalized, 'base64').toString('utf8')
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=')
+    const json = Buffer.from(padded, 'base64').toString('utf8')
     const payload = JSON.parse(json)
     return payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null
   } catch {
     return null
   }
+}
+
+function getTokenExpirationMs(token: string): number | null {
+  const payload = parseJwtPayload(token)
+  if (!payload) return null
+  const raw = (payload as { exp?: unknown }).exp
+  if (typeof raw === 'number') {
+    const expiresAt = raw * 1000
+    return Number.isFinite(expiresAt) ? expiresAt : null
+  }
+  if (typeof raw === 'string') {
+    const parsed = Number.parseFloat(raw)
+    if (!Number.isFinite(parsed)) return null
+    const expiresAt = parsed * 1000
+    return Number.isFinite(expiresAt) ? expiresAt : null
+  }
+  return null
+}
+
+function isTokenExpired(token: string, skewMs = 0): boolean {
+  const expiresAt = getTokenExpirationMs(token)
+  if (!expiresAt) return false
+  return expiresAt <= Date.now() + Math.max(0, skewMs)
 }
 
 function tokenHasIatClaim(token: string): boolean {
@@ -291,6 +315,8 @@ async function resolveGuestCredentials(args: LoginCommandArgs): Promise<Resolved
   if (envToken) {
     if (!tokenHasIatClaim(envToken.token)) {
       console.warn(`[psgit] Skipping ${envToken.source} guest token: missing 'iat' claim.`)
+    } else if (isTokenExpired(envToken.token, 5_000)) {
+      console.warn(`[psgit] Skipping ${envToken.source} guest token: token expired.`)
     } else {
       return {
         token: envToken.token,

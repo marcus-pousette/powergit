@@ -8,6 +8,7 @@
 - Live Playwright suite now reaches the explorer but still times out waiting for branch data (`branch-heading` never renders); Supabase isn’t ingesting refs even with `previousValues` merging, so continue debugging the control-plane write path before re-running.
 - Supabase writer now merges `previousValues` with `opData` so partial updates keep `org_id`/`repo_id`/`name` populated; rerun the live suites to confirm Supabase starts receiving refs again, and watch for follow-up schema errors if any columns are still missing.
 - Postinstall script (`scripts/ensure-powersync-core.mjs`) now copies `third_party/powersync-sqlite-core/libpowersync_aarch64.macos.dylib` into `@powersync/node/lib` and drops a `.dylib.dylib` alias, so fresh installs pick up the rebuilt core automatically without manual copying.
+- Supabase config bumps `auth.jwt_expiry` to 86,400 seconds (24h) so guest tokens survive daemon restarts; restart the dev stack after pulling to apply it and refresh the cached token once.
 - Stream orchestration needs a refresh: the explorer and sync rules now pass `{ org_id, repo_id }` parameters for each stream, but the daemon server still exposes plain string lists and `startDaemon` doesn’t wire `subscribeStreams`/`unsubscribeStreams`. Git helper / CLI can’t resubscribe, leaving raw tables empty client-side.
 - Rebuilt the PowerSync core (wasm + macos dylib) so `powersync_disable_drop_view()` is registered; the patched `@powersync/{web,node}` packages now bundle the updated binaries and the drop helper only no-ops when the flag is set.
 - Explorer e2e (`live-cli.spec.ts`) now seeds via the daemon; manual browser runs show refs/commits rendering once the patched core is active. Playwright still flakes because the control plane occasionally serves empty buckets, so shepherding real data through PowerSync remains a follow-up.
@@ -75,6 +76,25 @@ Create a development experience where every component—CLI, explorer, backgroun
 - Added a reusable daemon stub harness (`packages/remote-helper/src/__tests__/daemon-stub.ts`) plus coverage to assert stream subscriptions, refs, and fetch interactions without starting the full Supabase stack.
 - `seed-sync-rules` now creates the `powersync` replication publication automatically so local stacks don't stall with `[PSYNC_S1141] Publication 'powersync' does not exist`.
 - Explorer repo view now ships a VS Code-style file tree with a Monaco-based preview (GitHub raw fallback), so teams can browse files without leaving the app.
+
+## Agent Notes (2025-10-22)
+- Explorer file view now persists branch selection per org/repo and falls back to a tree derived from `file_changes` while Git packs index, so the UI stays usable during the first sync and surfaces clearer status messaging.
+- Added local blob metadata + download controls to the Monaco viewer; text previews expose size/SHA, binary blobs show a download CTA, and the helper reuses cached pack bytes before re-reading from PowerSync. Follow the updated TODOs for per-branch file persistence, worker-based pack indexing, and coverage.
+- `gitStore.indexPacks` now queues packs and processes them during idle frames with progress callbacks; the explorer subscribes to live progress so the UI can show counts and stay responsive. Evaluate a dedicated Web Worker if idle batching still drops frames on large repositories.
+- Explorer dev script now auto-refreshes the daemon guest token whenever `pnpm --filter @app/explorer dev` starts and the daemon reports an expired/soon-to-expire JWT, so Supabase writer errors stop appearing after long breaks.
+- The dev harness refreshes the daemon token *before* launching the daemon, so `pnpm --filter @app/explorer dev` no longer logs the transient “JWT expired” spam on startup.
+- Consolidated daemon bootstrap helpers (`scripts/dev-shared.mjs`) now power both `pnpm dev` and `pnpm dev:stack`, so each command refreshes tokens, restarts unhealthy daemons, and shares the same diagnostics.
+- Added `pnpm --filter @svc/daemon start:local` shortcut that runs through the shared launcher (loads profile env, bumps Supabase writer failure threshold, refreshes guest token) so you can start the daemon manually without juggling env vars.
+
+## File Explorer Local-First TODO
+- [x] Build a browser-side Git object cache: load all `objects.pack_bytes` rows in chronological order, decode base64, and index packs with `isomorphic-git` so commits/trees/blobs are addressable locally. Cache parsed pack OIDs to avoid reprocessing on refresh.
+- [x] Expose browser helpers (currently `gitStore`) that cover `readTreeAtPath`/`readFile` against PowerSync tables so queries work offline. Follow-up: decide whether to promote these APIs via `@ps/git` for broader reuse.
+- [x] Update file explorer route to use the helper instead of GitHub raw: fetch tree for selected branch/commit and render blob via Monaco. Handle large files with binary guardrails and provide a download action.
+- [x] Wire branch selector to `refs` table; selecting a branch resolves its head commit, reloads the tree, and persists the last selected branch in `localStorage`. (Persisting per-branch file selection still TODO.)
+- [x] Background sync: queue new `objects` packs, index them during idle frames, and surface live progress in the explorer UI. Follow-up: consider moving the queue into a dedicated Web Worker for very large repositories.
+- [ ] Expand tests: add unit coverage for pack parsing helper (mock pack with known blob), Playwright spec verifying offline preview (stub pack entry + blob). Update smoke test to assert local content render and branch persistence.
+- [x] Persist file selection per branch (keyed by `{orgId, repoId, branch}`) so switching branches restores the last opened path; still consider clearing stale entries when blobs disappear.
+- [ ] Add download coverage: unit test `downloadCurrentBlob` happy/error paths and an e2e assertion that the metadata bar renders once packs finish indexing.
 
 ## Agent Notes (2025-10-09)
 - CLI e2e suite now boots the local Supabase stack via the shared `test-stack-hooks` helper, seeds refs/commits directly into the Postgres raw tables, and runs the compiled CLI binary so worker paths resolve correctly.
