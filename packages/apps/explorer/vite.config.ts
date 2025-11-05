@@ -8,6 +8,9 @@ import { loadProfileEnvironment } from '../../cli/src/profile-env.js'
 import { PROFILE_DEFAULTS } from '../../cli/src/profile-defaults-data.js'
 
 const resolveFromRoot = (p: string) => path.resolve(fileURLToPath(new URL('.', import.meta.url)), p)
+const bufferPolyfillPath = resolveFromRoot(
+  '../../../node_modules/.pnpm/buffer@5.7.1/node_modules/buffer/index.js',
+)
 
 const repoRoot = resolveFromRoot('../../..')
 
@@ -196,9 +199,11 @@ export default defineConfig({
       '@shared/core/powersync/streams': resolveFromRoot('../../shared/src/powersync/streams.ts'),
       '@shared/core/': `${resolveFromRoot('../../shared/src')}/`,
       '@shared/core': resolveFromRoot('../../shared/src/index.ts'),
+      buffer: bufferPolyfillPath,
     },
   },
   optimizeDeps: {
+    include: ['buffer'],
     exclude: ['@journeyapps/wa-sqlite', '@powersync/web'],
   },
   worker: {

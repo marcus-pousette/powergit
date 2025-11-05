@@ -7,6 +7,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 const resolveFromRoot = (relativePath: string) => resolve(__dirname, relativePath)
+const bufferPolyfillPath = resolveFromRoot('../../../node_modules/.pnpm/buffer@5.7.1/node_modules/buffer/index.js')
 
 const repoRoot = resolve(__dirname, '..', '..', '..')
 const profileEnv = loadProfileEnvironment({ startDir: repoRoot, updateState: false })
@@ -27,6 +28,7 @@ export default defineConfig({
       '@shared/core/powersync/streams': resolveFromRoot('../../shared/src/powersync/streams.ts'),
       '@shared/core/': `${resolveFromRoot('../../shared/src')}/`,
       '@shared/core': resolveFromRoot('../../shared/src/index.ts'),
+      buffer: bufferPolyfillPath,
     },
   },
   test: {

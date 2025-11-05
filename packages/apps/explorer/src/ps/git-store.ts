@@ -1,5 +1,6 @@
-import LightningFS from '@isomorphic-git/lightning-fs'
 import * as git from 'isomorphic-git'
+import { PackFileStore } from './pack-file-store'
+import { PowerSyncFs } from './powersync-fs'
 
 export type PackRow = {
   id: string
@@ -26,11 +27,11 @@ export type IndexProgress = {
 }
 
 export class GitObjectStore {
-  private fs = new LightningFS('powersync-git-store', { wipe: false }).promises
+  private readonly packStore = new PackFileStore()
+  private fs = new PowerSyncFs({ packStore: this.packStore })
   private readonly gitdir = '/.git'
   private initialized = false
 
-  private readonly packCache = new Map<string, Uint8Array>()
   private readonly indexedPacks = new Set<string>()
   private readonly queue: PackRow[] = []
   private readonly queuedPackOids = new Set<string>()
@@ -45,26 +46,6 @@ export class GitObjectStore {
 
   constructor() {
     this.restoreIndexedSet()
-    const originalReadFile = this.fs.readFile.bind(this.fs)
-    this.fs.readFile = (async (path: string, options?: unknown) => {
-      const normalizedPath = typeof path === 'string' ? this.normalizeFsPath(path) : path
-      if (typeof normalizedPath === 'string' && this.packCache.has(normalizedPath)) {
-        return this.packCache.get(normalizedPath)!.slice()
-      }
-      const resolvedOptions =
-        options == null || (typeof options === 'object' && (options as { encoding?: unknown }).encoding == null)
-          ? { encoding: null }
-          : (options as Parameters<typeof originalReadFile>[1])
-      const result = await originalReadFile(path, resolvedOptions)
-      if (result == null && typeof normalizedPath === 'string' && this.packCache.has(normalizedPath)) {
-        return this.packCache.get(normalizedPath)!.slice()
-      }
-      return result
-    }) as typeof this.fs.readFile
-  }
-
-  private normalizeFsPath(path: string): string {
-    return path.replace(/\\/g, '/').replace(/\/+/g, '/')
   }
 
   private async ensureDirectory(path: string) {
@@ -227,14 +208,7 @@ export class GitObjectStore {
 
   private async processPack(pack: PackRow): Promise<void> {
     const packPath = `${this.gitdir}/objects/pack/pack-${pack.pack_oid}.pack`
-    const normalizedPackPath = this.normalizeFsPath(packPath)
-    const relativePath = packPath.replace(/^\/*\.git\//, '')
-    const normalizedRelativePath = this.normalizeFsPath(relativePath)
-    const cacheKeys = new Set<string>([
-      normalizedPackPath,
-      normalizedRelativePath,
-      this.normalizeFsPath(`/${normalizedRelativePath}`),
-    ])
+    const indexFileRelativePath = `.git/objects/pack/pack-${pack.pack_oid}.pack`
 
     if (this.indexedPacks.has(pack.pack_oid)) {
       const exists = await this.fs
@@ -255,19 +229,27 @@ export class GitObjectStore {
         await this.fs.unlink(packPath).catch(() => undefined)
         await this.fs.writeFile(packPath, writeCopy)
       })
-    for (const key of cacheKeys) {
-      this.packCache.set(key, writeCopy.slice())
-    }
+    console.debug('[gitStore] indexing pack', { indexFileRelativePath })
     await (git.indexPack as unknown as (args: Record<string, unknown>) => Promise<unknown>)({
       fs: this.fs,
       dir: '/',
       gitdir: this.gitdir,
-      filepath: relativePath,
+      filepath: indexFileRelativePath,
       packfile: writeCopy,
+    }).catch((error) => {
+      ;(globalThis as typeof globalThis & { __gitStoreLastError?: unknown }).__gitStoreLastError = {
+        name: (error as Error | undefined)?.name ?? null,
+        message: (error as Error | undefined)?.message ?? null,
+        stack: (error as Error | undefined)?.stack ?? null,
+        packOid: pack.pack_oid,
+        packSize: pack.pack_bytes?.length ?? null,
+        indexFileRelativePath,
+      }
+      console.error('[gitStore] indexPack threw', {
+        error,
+      })
+      throw error
     })
-    for (const key of cacheKeys) {
-      this.packCache.delete(key)
-    }
     this.indexedPacks.add(pack.pack_oid)
     this.persistIndexedSet()
   }
