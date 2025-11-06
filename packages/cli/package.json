@@ -14,8 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@powersync/common": "1.40.0",
-    "@powersync/node": "0.12.0",
+    "@powersync/common": "1.41.0",
+    "@powersync/node": "0.13.0",
     "@shared/core": "workspace:*",
     "simple-git": "^3.30.0",
     "yargs": "^17.7.2"

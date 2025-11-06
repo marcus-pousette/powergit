@@ -1,415 +1,224 @@
 import * as React from 'react'
 import { Link } from '@tanstack/react-router'
-import type { PowerSyncImportJob, PowerSyncImportStep } from '@shared/core'
+import type { PowerSyncImportJob } from '@shared/core'
 import {
   isDaemonEnabled,
   requestGithubImport,
   fetchGithubImportJob,
   type DaemonGithubImportRequest,
 } from '@ps/daemon-client'
-
-type StepStatus = PowerSyncImportStep['status']
+import { useTheme } from '../ui/theme-context'
 
 const POLL_INTERVAL_MS = 1_500
 
-interface GithubImportFormState {
-  repoUrl: string
-  orgId: string
-  repoId: string
-  branch: string
-}
-
-const INITIAL_FORM: GithubImportFormState = {
-  repoUrl: '',
-  orgId: '',
-  repoId: '',
-  branch: '',
-}
+type ImportPhase = 'idle' | 'submitting' | 'queued' | 'running' | 'success' | 'error'
 
 export function GithubImportCard(): React.JSX.Element | null {
   const daemonAvailable = React.useMemo(() => isDaemonEnabled(), [])
-  const [form, setForm] = React.useState<GithubImportFormState>(INITIAL_FORM)
-  const [touched, setTouched] = React.useState<{ org: boolean; repo: boolean }>({ org: false, repo: false })
-  const [submitError, setSubmitError] = React.useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const [repoUrl, setRepoUrl] = React.useState('')
+  const [status, setStatus] = React.useState<ImportPhase>('idle')
+  const [error, setError] = React.useState<string | null>(null)
   const [job, setJob] = React.useState<PowerSyncImportJob | null>(null)
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
 
   React.useEffect(() => {
     if (!job) return undefined
     if (job.status === 'success' || job.status === 'error') return undefined
 
     let cancelled = false
-    const interval = window.setInterval(async () => {
+    const poll = window.setInterval(async () => {
       try {
         const next = await fetchGithubImportJob(job.id)
         if (!cancelled && next) {
           setJob(next)
+          if (next.status === 'success' || next.status === 'error') {
+            window.clearInterval(poll)
+            setStatus(next.status === 'success' ? 'success' : 'error')
+            if (next.status === 'error') {
+              setError(next.error ?? 'Import failed unexpectedly.')
+            }
+          } else if (next.status === 'queued') {
+            setStatus('queued')
+          } else {
+            setStatus('running')
+          }
         }
-      } catch (error) {
-        console.warn('[Explorer] failed to poll import job', error)
+      } catch (pollError) {
+        console.warn('[Explorer] failed to poll import job', pollError)
       }
     }, POLL_INTERVAL_MS)
 
     return () => {
       cancelled = true
-      window.clearInterval(interval)
+      window.clearInterval(poll)
     }
   }, [job])
 
   if (!daemonAvailable) {
+    const disabledClasses = isDark
+      ? 'rounded-2xl border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-200'
+      : 'rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600'
     return (
-      <div
-        className="rounded-xl border border-dashed border-slate-300 bg-white/70 px-6 py-6 text-sm text-slate-600 shadow-sm"
-        data-testid="github-import-card-disabled"
-      >
-        <h3 className="text-base font-semibold text-slate-800">Import GitHub repository</h3>
-        <p className="mt-2">
-          Enable the PowerSync daemon (`VITE_POWERSYNC_USE_DAEMON=true`) to import public GitHub repositories directly from the
-          explorer.
-        </p>
+      <div className={disabledClasses}>
+        PowerSync daemon is disabled. Enable <code className="font-mono">VITE_POWERSYNC_USE_DAEMON=true</code> so the explorer can
+        clone public GitHub repositories.
       </div>
     )
   }
 
-  const handleRepoUrlChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value
-    setForm((prev) => ({ ...prev, repoUrl: value }))
-    const parsed = parseGithubUrl(value)
-    if (parsed) {
-      if (!touched.org) {
-        setForm((prev) => ({ ...prev, orgId: slugify(parsed.owner) }))
-      }
-      if (!touched.repo) {
-        setForm((prev) => ({ ...prev, repoId: slugify(parsed.repo) }))
-      }
-    }
-  }
-
-  const handleOrgChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setTouched((prev) => ({ ...prev, org: true }))
-    setForm((prev) => ({ ...prev, orgId: event.target.value }))
-  }
-
-  const handleRepoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setTouched((prev) => ({ ...prev, repo: true }))
-    setForm((prev) => ({ ...prev, repoId: event.target.value }))
-  }
-
-  const handleBranchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setForm((prev) => ({ ...prev, branch: event.target.value }))
-  }
-
-  const resetState = () => {
-    setForm(INITIAL_FORM)
-    setTouched({ org: false, repo: false })
-    setSubmitError(null)
-    setJob(null)
-  }
+  const derived = React.useMemo(() => deriveSlugs(repoUrl), [repoUrl])
+  const isSubmitting = status === 'submitting'
+  const showSummary = Boolean(job && derived)
+  const resultOrgId = job?.result?.orgId ?? job?.orgId ?? derived?.orgId ?? null
+  const resultRepoId = job?.result?.repoId ?? job?.repoId ?? derived?.repoId ?? null
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    setSubmitError(null)
+    setError(null)
+    setStatus('submitting')
 
-    const repoUrl = form.repoUrl.trim()
-    if (!repoUrl) {
-      setSubmitError('Provide a GitHub repository URL.')
+    const payload = buildImportPayload(repoUrl)
+    if (!payload) {
+      setStatus('error')
+      setError('Enter a valid GitHub repository URL (e.g. https://github.com/org/repo).')
       return
     }
 
-    const payload: DaemonGithubImportRequest = {
-      repoUrl,
-      orgId: slugify(form.orgId || slugifyFallback(repoUrl)),
-      repoId: slugify(form.repoId || slugifyFallback(repoUrl, 'repo')),
-      branch: form.branch.trim() || null,
-    }
-
-    if (!payload.orgId || !payload.repoId) {
-      setSubmitError('Provide org and repo slugs.')
-      return
-    }
-
-    setIsSubmitting(true)
     try {
-      const queuedJob = await requestGithubImport(payload)
-      setJob(queuedJob)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to enqueue import.'
-      setSubmitError(message)
-    } finally {
-      setIsSubmitting(false)
+      const queued = await requestGithubImport(payload)
+      setJob(queued)
+      if (queued.status === 'success') {
+        setStatus('success')
+      } else if (queued.status === 'error') {
+        setStatus('error')
+        setError(queued.error ?? 'Import failed unexpectedly.')
+      } else {
+        setStatus(queued.status === 'queued' ? 'queued' : 'running')
+      }
+    } catch (submitError) {
+      setStatus('error')
+      setError(submitError instanceof Error ? submitError.message : 'Failed to start import.')
     }
   }
 
-  const activeJobStatus = job?.status ?? null
-  const showStatus = Boolean(job)
-  const importCompleted = activeJobStatus === 'success'
-  const importFailed = activeJobStatus === 'error'
-  const resultOrgId = job?.result?.orgId ?? job?.orgId
-  const resultRepoId = job?.result?.repoId ?? job?.repoId
+  const statusMessage = (() => {
+    switch (status) {
+      case 'idle':
+        return 'Paste a GitHub URL to clone and explore it locally.'
+      case 'submitting':
+        return 'Queuing import…'
+      case 'queued':
+        return 'Import queued — waiting for the daemon to start cloning.'
+      case 'running':
+        return 'Cloning repository and streaming into PowerSync…'
+      case 'success':
+        return 'Repository imported successfully.'
+      case 'error':
+        return error ?? 'Import encountered an error.'
+      default:
+        return null
+    }
+  })()
+
+  const cardClasses = isDark
+    ? 'rounded-3xl border border-slate-700 bg-slate-900 px-6 py-6 text-slate-100 shadow-xl shadow-slate-900/40'
+    : 'rounded-3xl border border-slate-200 bg-white px-6 py-6 text-slate-900 shadow-lg'
+  const labelClasses = `text-sm font-medium uppercase tracking-wide ${isDark ? 'text-slate-400' : 'text-slate-500'}`
+  const inputWrapperClasses = 'flex flex-col gap-2'
+  const inputRowClasses = 'flex flex-col gap-3 sm:flex-row sm:items-end'
+  const inputFieldClasses = isDark
+    ? 'w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+    : 'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+
+  const statusTextClass = isDark ? 'text-sm text-slate-200/80' : 'text-sm text-slate-600'
+  const summaryContainerClass = isDark
+    ? 'rounded-xl bg-slate-900/70 px-4 py-3 text-xs text-slate-200 shadow-inner shadow-slate-900/50'
+    : 'rounded-xl bg-white/80 px-4 py-3 text-xs text-slate-700 shadow-inner shadow-slate-200/60'
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white/90 p-6 shadow-sm" data-testid="github-import-card">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-slate-900" data-testid="github-import-heading">
-            Import a GitHub repository
-          </h3>
-          <p className="mt-1 text-sm text-slate-600">
-            Paste the URL of a public GitHub repository. The daemon will clone it locally, push into PowerSync, and the explorer will
-            stream the repo automatically.
-          </p>
-        </div>
-        {(importCompleted || importFailed) && (
-          <button
-            type="button"
-            onClick={resetState}
-            className="inline-flex items-center justify-center rounded-md border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
-          >
-            Import another repo
-          </button>
-        )}
-      </div>
-
-      <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
-        <div>
-          <label className="text-sm font-medium text-slate-700" htmlFor="github-url">
-            GitHub URL
-          </label>
+    <div className={cardClasses}>
+      <form className={inputWrapperClasses} onSubmit={handleSubmit}>
+        <label className={labelClasses} htmlFor="github-repo-url">
+          Explore a Git repository
+        </label>
+        <div className={inputRowClasses}>
           <input
-            id="github-url"
-            name="github-url"
+            id="github-repo-url"
             type="url"
-            value={form.repoUrl}
-            onChange={handleRepoUrlChange}
+            required
+            autoComplete="off"
+            value={repoUrl}
+            onChange={(event) => setRepoUrl(event.target.value)}
             placeholder="https://github.com/powersync/powergit"
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-            data-testid="github-import-url"
+            className={inputFieldClasses}
+            data-testid="explore-repo-input"
           />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-sm font-medium text-slate-700" htmlFor="import-org">
-              PowerSync org slug
-            </label>
-            <input
-              id="import-org"
-              name="import-org"
-              value={form.orgId}
-              onChange={handleOrgChange}
-              placeholder="acme"
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-              data-testid="github-import-org"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-slate-700" htmlFor="import-repo">
-              PowerSync repo slug
-            </label>
-            <input
-              id="import-repo"
-              name="import-repo"
-              value={form.repoId}
-              onChange={handleRepoChange}
-              placeholder="infra"
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-              data-testid="github-import-repo"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="text-sm font-medium text-slate-700" htmlFor="import-branch">
-            Default branch (optional)
-          </label>
-          <input
-            id="import-branch"
-            name="import-branch"
-            value={form.branch}
-            onChange={handleBranchChange}
-            placeholder="main"
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-            data-testid="github-import-branch"
-          />
-          <p className="mt-1 text-xs text-slate-500">
-            Leave blank to use the repo&apos;s default branch. All branches and tags are pushed to PowerSync.
-          </p>
-        </div>
-
-        {submitError ? <p className="text-sm text-red-600">{submitError}</p> : null}
-
-        <div className="flex items-center gap-3">
           <button
             type="submit"
+            className="inline-flex items-center justify-center rounded-xl bg-emerald-400 px-6 py-3 text-sm font-semibold text-emerald-950 shadow-lg shadow-emerald-500/40 transition hover:bg-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 disabled:cursor-not-allowed disabled:opacity-70"
             disabled={isSubmitting}
-            className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300"
-            data-testid="github-import-submit"
+            data-testid="explore-repo-submit"
           >
-            {isSubmitting ? 'Starting import…' : 'Start import'}
+            {isSubmitting ? 'Exploring…' : 'Explore'}
           </button>
-          <p className="text-xs text-slate-500">
-            The daemon performs the clone locally and reports progress here.
-          </p>
         </div>
       </form>
 
-      {showStatus ? <ImportStatus job={job!} /> : null}
-
-      {importCompleted && resultOrgId && resultRepoId ? (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
-          data-testid="github-import-success"
-        >
-          <span className="font-semibold">Import complete.</span>
-          <Link
-            to="/org/$orgId/repo/$repoId"
-            params={{ orgId: resultOrgId, repoId: resultRepoId }}
-            className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white shadow-sm transition hover:bg-emerald-500"
-            data-testid="github-import-open-repo"
-          >
-            Open repository →
-          </Link>
+      {statusMessage ? (
+        <div className={`${statusTextClass} mt-4`}>
+          {statusMessage}{' '}
+          {status === 'error' && error ? <span className="text-red-400">({error})</span> : null}
+          {status === 'success' && resultOrgId && resultRepoId ? (
+            <span
+              className={`inline-flex items-center gap-1 ${isDark ? 'text-emerald-200' : 'text-emerald-600'}`}
+            >
+              <Link
+                to="/org/$orgId/repo/$repoId/files"
+                params={{ orgId: resultOrgId as string, repoId: resultRepoId as string }}
+                className={`font-medium underline-offset-2 hover:underline ${
+                  isDark ? 'text-emerald-200' : 'text-emerald-700'
+                }`}
+              >
+                Open repository
+              </Link>
+              →
+            </span>
+          ) : null}
         </div>
       ) : null}
 
-      {importFailed && submitError === null ? (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          Import failed. Expand the steps below for more detail and try again.
+      {showSummary && resultOrgId && resultRepoId ? (
+        <div className={`${summaryContainerClass} mt-3`}>
+          <div className={isDark ? 'font-medium text-slate-100' : 'font-medium text-slate-800'}>
+            Target: <code>{resultOrgId}/{resultRepoId}</code>
+          </div>
+          <div className={isDark ? 'text-slate-200' : 'text-slate-600'}>
+            Status: <span className="uppercase tracking-wide text-[11px]">{job?.status ?? 'queued'}</span>
+          </div>
         </div>
       ) : null}
     </div>
   )
 }
 
-function ImportStatus({ job }: { job: PowerSyncImportJob }) {
-  const statusLabel = React.useMemo(() => {
-    switch (job.status) {
-      case 'queued':
-        return 'Queued'
-      case 'running':
-        return 'In progress'
-      case 'success':
-        return 'Complete'
-      case 'error':
-        return 'Failed'
-      default:
-        return job.status
-    }
-  }, [job.status])
-
-  return (
-    <div
-      className="mt-6 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-inner"
-      data-testid="github-import-status"
-      data-status={job.status}
-    >
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium text-slate-700">Import status</p>
-          <p className="text-xs text-slate-500">{new Date(job.updatedAt).toLocaleString()}</p>
-        </div>
-        <StatusBadge status={job.status} label={statusLabel} />
-      </div>
-      <ul className="mt-4 space-y-2">
-        {job.steps.map((step) => (
-          <li
-            key={step.id}
-            className={stepClassName(step.status)}
-            data-testid="github-import-step"
-            data-step-id={step.id}
-            data-status={step.status}
-          >
-            <div className="flex h-8 w-8 flex-none items-center justify-center rounded-full text-sm font-semibold text-white">
-              {statusIndicator(step.status)}
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-slate-800">{step.label}</p>
-              {step.detail ? <p className="text-xs text-slate-500">{step.detail}</p> : null}
-            </div>
-          </li>
-        ))}
-      </ul>
-      {job.logs.length > 0 ? (
-        <details className="mt-3 text-xs text-slate-500">
-          <summary className="cursor-pointer select-none text-slate-600">View daemon logs</summary>
-          <ul className="mt-2 space-y-1">
-            {job.logs.slice(-6).map((entry) => (
-              <li key={entry.id}>
-                <span className="font-semibold uppercase text-slate-400">{entry.level}</span> ·{' '}
-                <span>{new Date(entry.timestamp).toLocaleTimeString()}</span> · <span>{entry.message}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-      {job.status === 'error' && job.error ? <p className="mt-3 text-sm text-red-600">{job.error}</p> : null}
-    </div>
-  )
+function buildImportPayload(repoUrl: string): DaemonGithubImportRequest | null {
+  const url = repoUrl.trim()
+  if (!url) return null
+  const parsed = parseGithubUrl(url)
+  const orgId = slugify(parsed?.owner ?? slugifyFallback(url))
+  const repoId = slugify(parsed?.repo ?? slugifyFallback(url, 'repo'))
+  if (!orgId || !repoId) return null
+  return { repoUrl: url, orgId, repoId, branch: null }
 }
 
-function StatusBadge({ status, label }: { status: PowerSyncImportJob['status']; label: string }) {
-  const styles: Record<PowerSyncImportJob['status'], string> = {
-    queued: 'bg-slate-100 text-slate-700',
-    running: 'bg-blue-100 text-blue-700',
-    success: 'bg-emerald-100 text-emerald-700',
-    error: 'bg-red-100 text-red-700',
-  }
-  return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${styles[status]}`}>{label}</span>
-}
-
-function statusIndicator(status: StepStatus): string {
-  switch (status) {
-    case 'done':
-      return '✓'
-    case 'active':
-      return '…'
-    case 'error':
-      return '!'
-    default:
-      return '•'
-  }
-}
-
-function stepClassName(status: StepStatus): string {
-  switch (status) {
-    case 'done':
-      return 'flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800'
-    case 'active':
-      return 'flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800'
-    case 'error':
-      return 'flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800'
-    default:
-      return 'flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700'
-  }
-}
-
-function parseGithubUrl(raw: string): { owner: string; repo: string } | null {
-  const candidate = raw.trim()
-  if (!candidate) return null
-
-  let normalized = candidate
-  if (!/^[a-z]+:\/\//i.test(normalized)) {
-    if (normalized.startsWith('github.com/')) {
-      normalized = `https://${normalized}`
-    } else if (/^[\w.-]+\/[\w.-]+(?:\.git)?$/i.test(normalized)) {
-      normalized = `https://github.com/${normalized}`
-    } else {
-      normalized = `https://${normalized}`
-    }
-  }
-
+function parseGithubUrl(value: string): { owner: string; repo: string } | null {
   try {
-    const url = new URL(normalized)
-    const host = url.hostname.toLowerCase()
-    if (host !== 'github.com' && host !== 'www.github.com') return null
+    const url = new URL(value.trim())
+    if (!/github\.com$/i.test(url.host)) return null
     const parts = url.pathname.split('/').filter(Boolean)
     if (parts.length < 2) return null
-    let repo = parts[1] ?? ''
-    if (!repo) return null
-    if (repo.toLowerCase().endsWith('.git')) {
-      repo = repo.slice(0, -4)
-    }
-    return { owner: parts[0] ?? '', repo }
+    return { owner: parts[0]!, repo: parts[1]!.replace(/\.git$/i, '') }
   } catch {
     return null
   }
@@ -417,15 +226,29 @@ function parseGithubUrl(raw: string): { owner: string; repo: string } | null {
 
 function slugify(value: string): string {
   return value
-    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
     .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
 }
 
-function slugifyFallback(repoUrl: string, type: 'org' | 'repo' = 'org'): string {
-  const parsed = parseGithubUrl(repoUrl)
-  if (!parsed) return ''
-  return slugify(type === 'org' ? parsed.owner : parsed.repo)
+function slugifyFallback(url: string, type: 'org' | 'repo' = 'org'): string {
+  try {
+    const { pathname } = new URL(url)
+    const parts = pathname.split('/').filter(Boolean)
+    if (type === 'org') {
+      return slugify(parts[0] ?? 'organisation')
+    }
+    return slugify(parts[1] ?? 'repository')
+  } catch {
+    return slugify(type === 'org' ? 'organisation' : 'repository')
+  }
+}
+
+function deriveSlugs(repoUrl: string): { orgId: string; repoId: string } | null {
+  const payload = buildImportPayload(repoUrl)
+  if (!payload) return null
+  if (!payload.orgId || !payload.repoId) return null
+  return { orgId: payload.orgId, repoId: payload.repoId }
 }

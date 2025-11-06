@@ -3,7 +3,7 @@ import { Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import type { PowerSyncDatabase, SyncStreamSubscription } from '@powersync/node';
-import { createClient, type Session } from '@supabase/supabase-js';
+import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { resolveDaemonConfig, type ResolveDaemonConfigOptions } from './config.js';
 import { DaemonPowerSyncConnector } from './connector.js';
 import { connectWithSchemaRecovery, createPowerSyncDatabase } from './database.js';
@@ -330,6 +330,22 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     },
   });
 
+  const writerUsesServiceRole =
+    typeof supabaseServiceRole === 'string' && supabaseServiceRole.trim().length > 0;
+  const supabaseServiceRoleKey = writerUsesServiceRole ? supabaseServiceRole!.trim() : null;
+  const supabaseWriterClient: SupabaseClient =
+    writerUsesServiceRole && supabaseServiceRoleKey
+      ? (createClient(supabaseUrl, supabaseServiceRoleKey, {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+          },
+          db: {
+            schema: supabaseSchema ?? undefined,
+          },
+        }) as SupabaseClient)
+      : (supabase as SupabaseClient);
+
   let supabaseSession: Session | null = null;
   let supabaseAuthSubscription: { unsubscribe: () => void } | null = null;
   let supabaseWriter: SupabaseWriter | null = null;
@@ -365,6 +381,51 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       }
     }
   };
+  let database: PowerSyncDatabase | null = null;
+  let connectPromise: Promise<void> | null = null;
+  const scheduleConnect = (reason: string) => {
+    if (!authEndpoint || !authToken) {
+      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — credentials missing`);
+      connected = false;
+      return;
+    }
+    const db = database;
+    if (!db) {
+      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — database not ready`);
+      connected = false;
+      return;
+    }
+    if (isJwtExpired(authToken, 5_000)) {
+      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — token expired; await refreshed credentials.`);
+      connected = false;
+      return;
+    }
+    if (connectPromise) {
+      return;
+    }
+    console.info(`[powersync-daemon] connecting to PowerSync backend (${reason})`);
+    connected = false;
+    const task = (async () => {
+      try {
+        await connectWithSchemaRecovery(db, {
+          connector,
+          dbPath: config.dbPath,
+          includeDefaultStreams: false,
+        });
+        connected = true;
+        connectedAt = new Date();
+        console.info('[powersync-daemon] connected to PowerSync backend');
+      } catch (error) {
+        connected = false;
+        console.error('[powersync-daemon] failed to connect to PowerSync backend', error);
+        throw error;
+      }
+    })();
+    connectPromise = task.finally(() => {
+      connectPromise = null;
+    });
+    task.catch(() => undefined);
+  };
 
   const clearSupabaseAuthSubscription = () => {
     if (supabaseAuthSubscription) {
@@ -382,7 +443,6 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     authExpiresAt = null;
     authObtainedAt = null;
     authMetadata = { source: 'supabase', reason, status: 'signed_out' };
-    supabaseWriter?.setAccessToken(null);
     if (supabaseWriter) {
       await supabaseWriter.stop().catch(() => undefined);
     }
@@ -409,9 +469,11 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       event: source,
       user: session.user ? { id: session.user.id, email: session.user.email } : null,
     };
-    supabaseWriter?.setAccessToken(accessToken);
-    if (authToken && !isJwtExpired(authToken, 5_000)) {
-      supabaseWriter?.start();
+    if (supabaseWriter) {
+      const canStartWriter = writerUsesServiceRole || !isJwtExpired(authToken, 5_000);
+      if (canStartWriter) {
+        supabaseWriter.start();
+      }
     }
     scheduleConnect(`supabase-${source}`);
   };
@@ -451,8 +513,9 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   };
 
   const startedAt = new Date();
-  const database = await createPowerSyncDatabase({ dbPath: config.dbPath });
-  const subscriptionManager = new StreamSubscriptionManager(database);
+  const databaseInstance = await createPowerSyncDatabase({ dbPath: config.dbPath });
+  database = databaseInstance;
+  const subscriptionManager = new StreamSubscriptionManager(databaseInstance);
   const daemonBaseUrl = `http://127.0.0.1:${config.port}`;
   const importManager = new GithubImportManager({
     daemonBaseUrl,
@@ -467,42 +530,26 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       );
     }
 
-    const supabaseApiKey = supabaseServiceRole ?? supabaseAnonKey;
-    if (!supabaseApiKey) {
-      throw new Error(
-        '[powersync-daemon] Supabase writer requires either POWERSYNC_SUPABASE_SERVICE_ROLE_KEY or POWERSYNC_SUPABASE_ANON_KEY. Set POWERSYNC_DISABLE_SUPABASE_WRITER=true to run without Supabase replication.',
-      );
-    }
-
-    const usingServiceRole = Boolean(supabaseServiceRole);
-    if (!usingServiceRole) {
+    if (!writerUsesServiceRole) {
       console.warn(
         '[powersync-daemon] Supabase writer running in UNSAFE mode — using anon/public key for writes. Configure POWERSYNC_SUPABASE_SERVICE_ROLE_KEY to lock this down.',
       );
     }
 
     supabaseWriter = new SupabaseWriter({
-      database,
-      config: {
-        url: supabaseUrl,
-        apiKey: supabaseApiKey,
-        schema: supabaseSchema,
-        accessToken: authToken ?? undefined,
-      },
+      database: databaseInstance,
+      client: supabaseWriterClient,
     });
-    supabaseWriter.setAccessToken(authToken);
-    if (authToken && !isJwtExpired(authToken, 5_000)) {
+    const hasActiveSession = Boolean(supabaseSession && authToken && !isJwtExpired(authToken, 5_000));
+    const writerReady = writerUsesServiceRole || hasActiveSession;
+    if (writerReady) {
       supabaseWriter.start();
       console.info(
-        `[powersync-daemon] Supabase writer started (${usingServiceRole ? 'service-role key' : 'anon/public key'})`,
-      );
-    } else if (authToken) {
-      console.warn(
-        '[powersync-daemon] Supabase writer initialised but PowerSync token is expired; waiting for refreshed credentials before starting.',
+        `[powersync-daemon] Supabase writer started (${writerUsesServiceRole ? 'service-role key' : 'anon/public key'})`,
       );
     } else {
       console.info(
-        `[powersync-daemon] Supabase writer initialised (${usingServiceRole ? 'service-role key' : 'anon/public key'}) — waiting for PowerSync auth before starting`,
+        `[powersync-daemon] Supabase writer initialised (${writerUsesServiceRole ? 'service-role key' : 'anon/public key'}) — waiting for Supabase auth before starting`,
       );
     }
   } else {
@@ -519,71 +566,12 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   });
 
   let running = true;
-  let connectPromise: Promise<void> | null = null;
   const abortController = new AbortController();
   const requestShutdown = (reason: string) => {
     if (abortController.signal.aborted) return;
     running = false;
     console.info(`[powersync-daemon] shutdown requested (${reason}); shutting down`);
     abortController.abort();
-  };
-
-  const scheduleConnect = (reason: string) => {
-    if (!authEndpoint || !authToken) {
-      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — credentials missing`);
-      connected = false;
-      return;
-    }
-    if (isJwtExpired(authToken, 5_000)) {
-      console.warn(`[powersync-daemon] skipping PowerSync connect (${reason}) — token expired; await refreshed credentials.`);
-      connected = false;
-      return;
-    }
-    if (connectPromise) {
-      return;
-    }
-    console.info(`[powersync-daemon] connecting to PowerSync backend (${reason})`);
-    connected = false;
-    const task = (async () => {
-      try {
-        await connectWithSchemaRecovery(database, {
-          connector,
-          dbPath: config.dbPath,
-          includeDefaultStreams: false,
-        });
-        connected = true;
-        connectedAt = new Date();
-        console.info('[powersync-daemon] connected to PowerSync backend');
-      } catch (error) {
-        connected = false;
-        console.error('[powersync-daemon] failed to connect to PowerSync backend', error);
-        throw error;
-      }
-    })();
-    connectPromise = task.finally(() => {
-      connectPromise = null;
-    });
-    task.catch(() => undefined);
-  };
-
-  const waitForConnection = async (timeoutMs: number): Promise<boolean> => {
-    if (connected) {
-      return true;
-    }
-    const pending = connectPromise;
-    if (!pending) {
-      return connected;
-    }
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-      await pending.catch(() => undefined);
-      return connected;
-    }
-    try {
-      await Promise.race([pending, delay(timeoutMs)]);
-    } catch {
-      // ignore race rejections
-    }
-    return connected;
   };
 
   if (config.initialStreams.length > 0) {
@@ -794,13 +782,13 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     listImportJobs: () => importManager.listJobs(),
     getImportJob: (id) => importManager.getJob(id),
     importGithubRepo: async (payload) => importManager.enqueue(payload),
-    fetchRefs: ({ orgId, repoId, limit }) => listRefs(database, { orgId, repoId, limit }),
-    listRepos: ({ orgId, limit }) => listRepos(database, { orgId, limit }),
-    getRepoSummary: ({ orgId, repoId }) => getRepoSummary(database, { orgId, repoId }),
+    fetchRefs: ({ orgId, repoId, limit }) => listRefs(databaseInstance, { orgId, repoId, limit }),
+    listRepos: ({ orgId, limit }) => listRepos(databaseInstance, { orgId, limit }),
+    getRepoSummary: ({ orgId, repoId }) => getRepoSummary(databaseInstance, { orgId, repoId }),
     fetchPack: async ({ orgId, repoId }) => {
       let packRow: Awaited<ReturnType<typeof getLatestPack>> = null;
       try {
-        packRow = await getLatestPack(database, { orgId, repoId });
+        packRow = await getLatestPack(databaseInstance, { orgId, repoId });
       } catch (error) {
         console.error(
           `[powersync-daemon] pack lookup failed for ${orgId}/${repoId}`,
@@ -826,7 +814,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     },
     pushPack: async ({ orgId, repoId, payload }) => {
       try {
-        const result = await persistPush(database, {
+        const result = await persistPush(databaseInstance, {
           orgId,
           repoId,
           updates: payload.updates,

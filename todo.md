@@ -5,6 +5,7 @@
 - Supabase-only auth path is in place end-to-end: CLI session caching no longer stores refresh tokens, and the dev stack/Explorer scripts use the shared `ensureDaemonSupabaseAuth` helper instead of guest token refreshers.
 - Remote helper now blocks on the daemon’s Supabase-authenticated status; if the daemon returns `auth_required`, pushes/fetches bail out with a `pnpm --filter @pkg/cli cli login` hint.
 - Bundled profile defaults (including the hosted `prod` stack) live in `packages/cli/src/profile-defaults-data.js`; tweak that module before publishing builds so first-run users receive the correct endpoints/tokens.
+- Daemon boot injects `SupabaseWriter` with the shared Supabase JS client; service-role key is optional and no longer required for local-first auth (writer starts once the Supabase session is ready).
 - Raw table writes now target the `id` primary key again (`persistPush` uses `refId`/`commitId`/`fileChangeId` + `ON CONFLICT(id)` and stops pruning untouched refs). Monitor Supabase to confirm refs remain populated after new pushes before tackling any composite-key migration follow-up.
 - Supabase writer now piggybacks on the daemon’s Supabase JWT (or `POWERSYNC_SUPABASE_ACCESS_TOKEN`) instead of requiring the service-role secret; once RLS allows authenticated writes we can drop `POWERSYNC_SUPABASE_SERVICE_ROLE_KEY` from the `local-dev` profile exports entirely.
 - Dropped the bespoke `ensureLocalSchema` bootstrap—daemon startup now relies on PowerSync’s default triggers. Keep an eye on the logs (`Supabase writer started…`) to confirm the poller stays healthy on fresh replicas.
@@ -26,6 +27,12 @@
 - `psgit login --guest` now falls back to `/auth/status` when the daemon response isn’t ready, guaranteeing the saved session (and subsequent tests) capture the daemon’s issued token instead of a placeholder.
 - Reapplying the patched binaries workflow: `pnpm patch @powersync/web` → copy `third_party/powersync-sqlite-core/libpowersync*.wasm` into `dist/` → `pnpm patch-commit ...` (repeat for `@powersync/node` with the dylib/static lib) → `pnpm install --force` → restart Vite/daemon so the new `@powersync/web` symlink refreshes (it should point at a patch hash whose wasm contains `powersync_disable_drop_view`).
 - Dev stack bootstrap now records `POWERSYNC_DAEMON_ENDPOINT` and relies on the Supabase session (no more `POWERSYNC_DAEMON_TOKEN`). Downstream scripts load the profile via `loadProfileEnvironment`, and the daemon authenticates through Supabase device flow instead of guest tokens.
+
+### Explorer UI polish (2025-10-22)
+- Header now exposes a rounded theme toggle that swaps between sun/moon glyphs from `react-icons/ci` and persists the selected mode via the existing `ThemeProvider`.
+- Home/import surfaces inherit the new palette: the GitHub import card drops the border box in favour of lighter dividers, and empty states/cards pick complementary foregrounds in both modes.
+- Repo detail pages (files/branches/commits/org activity) share unified light/dark tokens; file explorer shells coordinate with git store status messages and Monaco adopts `vs-light` when the app theme is light.
+- Tailwind bumped to 4.1.16 with `darkMode: 'class'`; PostCSS now uses `@tailwindcss/postcss` and imports `@import 'tailwindcss';` in `src/index.css`. Vite + tsconfig alias `react-icons/ci` to the local icon module so we avoid pulling the full icon library. Typecheck passes (`pnpm --filter @app/explorer typecheck`).
 - Added `pnpm dev:daemon` wrapper (`scripts/start-daemon-with-profile.mjs`) so local runs launch the daemon with the active `psgit` profile without manual sourcing; CLI auto-start and explorer dev script both route through this entrypoint. Daemon bootstrap defers the PowerSync connect loop until credentials arrive so `psgit login --guest` can bring an unauthenticated daemon online. Playwright live stack setup now authenticates the daemon via the CLI helper and relies on profile-backed credentials instead of a temporary env file.
 - Remaining sync gaps are upstream (PowerSync service still needs to populate control-plane tables); once the service streams bucket snapshots, the Playwright suite should match manual results.
 - Live Playwright spec now fails fast if PowerSync stays disconnected for ~20s (tunable via `POWERSYNC_E2E_FAIL_FAST_MS`) so iteration remains quick while we stabilise the backend.
@@ -60,7 +67,7 @@ Create a development experience where every component—CLI, explorer, backgroun
 ---
 
 ## Agent Notes (2025-10-08)
-- Pinned workspace to `@powersync/common@1.40.0`, `@powersync/web@1.27.1`, `@powersync/react@1.8.1`, and `@powersync/node@0.11.1`, updating the peer rule to `>=1.40.0` so TanStack adapter stays compliant without editing the submodule.
+- Pinned workspace to `@powersync/common@1.41.0`, `@powersync/web@1.28.0`, `@powersync/react@1.8.1`, and `@powersync/node@0.13.0`, updating the peer rule to `>=1.40.0` so TanStack adapter stays compliant without editing the submodule.
 - Added automatic PowerSync env injection in `scripts/dev-local-stack.mjs` so `pnpm dev:stack` exports `PS_*`/`POWERSYNC_*` values needed by the config parser and seeding. Verified via `node scripts/dev-local-stack.mjs --dry-run --print-exports`.
 - Tightened `pnpm dev:stack` error handling so workspace builds and seed steps fail fast instead of logging warnings. Verified command now exits once `@pkg/cli` build fails on missing `objects` key.
 - Removed the Supabase `powersync-push` function and demo seeding hook from `pnpm dev:stack`; docs/scripts now stop short of pushing sample commits until the daemon-backed flow replaces it.

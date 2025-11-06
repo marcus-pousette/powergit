@@ -7,6 +7,7 @@ import { useRepoStreams } from '@ps/streams'
 import { useRepoFixture } from '@ps/test-fixture-bridge'
 import { useCollections } from '@tsdb/collections'
 import type { Database } from '@ps/schema'
+import { useTheme } from '../ui/theme-context'
 
 export const Route = createFileRoute('/org/$orgId/repo/$repoId/branches' as any)({
   component: Branches,
@@ -14,6 +15,8 @@ export const Route = createFileRoute('/org/$orgId/repo/$repoId/branches' as any)
 
 function Branches() {
   const { orgId, repoId } = Route.useParams()
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
   useRepoStreams(orgId, repoId)
   const fixture = useRepoFixture(orgId, repoId)
   if (import.meta.env.DEV) {
@@ -36,15 +39,22 @@ function Branches() {
   ) as { data: Array<BranchRow> }
 
   const branches = fixture?.branches?.length ? fixture.branches : liveBranches
+  const headingClass = isDark ? 'text-lg font-semibold text-slate-100' : 'text-lg font-semibold text-slate-900'
+  const listClass = 'space-y-1'
+  const itemClass = isDark
+    ? 'rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 shadow-sm shadow-slate-900/40'
+    : 'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm'
+  const shaClass = isDark ? 'font-mono text-xs text-slate-400' : 'font-mono text-xs text-slate-500'
+
   return (
     <div className="space-y-3" data-testid="branch-view">
-      <h3 className="font-semibold text-lg" data-testid="branch-heading">
+      <h3 className={headingClass} data-testid="branch-heading">
         Branches ({orgId}/{repoId})
       </h3>
-      <ul className="space-y-1" data-testid="branch-list">
+      <ul className={listClass} data-testid="branch-list">
         {branches.map((b) => (
-          <li key={b.name ?? ''} className="border rounded p-2 bg-white" data-testid="branch-item">
-            {b.name ?? '(unnamed)'} — <span className="font-mono text-xs">{b.target_sha ?? '—'}</span>
+          <li key={b.name ?? ''} className={itemClass} data-testid="branch-item">
+            {b.name ?? '(unnamed)'} — <span className={shaClass}>{b.target_sha ?? '—'}</span>
           </li>
         ))}
       </ul>

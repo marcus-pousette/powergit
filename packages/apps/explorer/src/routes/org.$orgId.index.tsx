@@ -6,6 +6,7 @@ import { useLiveQuery } from '@tanstack/react-db'
 import { useCollections } from '@tsdb/collections'
 import { useOrgStreams } from '@ps/streams'
 import type { Database } from '@ps/schema'
+import { useTheme } from '../ui/theme-context'
 
 export const Route = createFileRoute('/org/$orgId/' as any)({
   component: OrgActivity,
@@ -13,6 +14,8 @@ export const Route = createFileRoute('/org/$orgId/' as any)({
 
 export function OrgActivity() {
   const { orgId } = Route.useParams()
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
   const { refs } = useCollections()
   type RefRow = Pick<Database['refs'], 'org_id' | 'repo_id' | 'name' | 'target_sha' | 'updated_at'>
   const { data: rows = [] } = useLiveQuery(
@@ -71,40 +74,57 @@ export function OrgActivity() {
 
   const isLoading = rows.length === 0
 
+  const headingClass = isDark ? 'text-xl font-semibold text-slate-100' : 'text-xl font-semibold text-slate-900'
+  const loadingClass = isDark
+    ? 'rounded-lg border border-dashed border-slate-700/70 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-300 shadow-inner shadow-slate-900/40'
+    : 'rounded-lg border border-dashed border-slate-300 bg-white/70 px-4 py-6 text-center text-sm text-slate-500'
+  const repoCardClass = isDark
+    ? 'rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-4 shadow-lg shadow-slate-900/40'
+    : 'rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm'
+  const repoTitleClass = isDark ? 'text-lg font-semibold text-slate-100' : 'text-lg font-semibold text-slate-900'
+  const repoBadgeLabel = isDark ? 'text-xs uppercase tracking-wide text-slate-400' : 'text-xs uppercase tracking-wide text-slate-500'
+  const repoLinkClass = isDark
+    ? 'text-sm font-medium text-emerald-300 hover:text-emerald-200'
+    : 'text-sm font-medium text-emerald-600 hover:text-emerald-500'
+  const branchItemClass = isDark
+    ? 'flex items-center justify-between rounded-lg bg-slate-800/60 px-3 py-2 text-slate-200'
+    : 'flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-slate-600'
+  const branchNameClass = isDark ? 'font-medium text-slate-100' : 'font-medium text-slate-800'
+  const branchTimestampClass = isDark ? 'text-xs text-slate-400' : 'text-xs text-slate-500'
+  const branchShaClass = isDark ? 'font-mono text-xs text-slate-300' : 'font-mono text-xs text-slate-500'
+
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold">Org: {orgId} — Activity</h2>
+      <h2 className={headingClass}>Org: {orgId} — Activity</h2>
       {isLoading ? (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-white/70 px-4 py-6 text-center text-sm text-slate-500">
-          Loading repository refs…
-        </div>
+        <div className={loadingClass}>Loading repository refs…</div>
       ) : (
         <ul className="space-y-3">
           {grouped.map((repo) => (
-            <li key={repo.repoId} className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <li key={repo.repoId} className={repoCardClass}>
               <div className="flex items-baseline justify-between">
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-900">{repo.repoId}</h3>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Tracked branches</p>
+                  <h3 className={repoTitleClass}>{repo.repoId}</h3>
+                  <p className={repoBadgeLabel}>Tracked branches</p>
                 </div>
                 <Link
-                  className="text-sm font-medium text-blue-600 hover:text-blue-500"
+                  className={repoLinkClass}
                   to="/org/$orgId/repo/$repoId"
                   params={{ orgId, repoId: repo.repoId }}
                 >
                   Open repo →
                 </Link>
               </div>
-              <ul className="mt-3 space-y-1 text-sm text-slate-600">
+              <ul className="mt-3 space-y-1 text-sm">
                 {repo.branches.map((branch, index) => (
-                  <li key={`${branch.name ?? 'branch'}-${index}`} className="flex items-center justify-between rounded bg-slate-50 px-3 py-2">
+                  <li key={`${branch.name ?? 'branch'}-${index}`} className={branchItemClass}>
                     <div>
-                      <div className="font-medium text-slate-800">{branch.name ?? '(unnamed ref)'}</div>
-                      <div className="text-xs text-slate-500">
+                      <div className={branchNameClass}>{branch.name ?? '(unnamed ref)'}</div>
+                      <div className={branchTimestampClass}>
                         {branch.updatedAt ? new Date(branch.updatedAt).toLocaleString() : '—'}
                       </div>
                     </div>
-                    <span className="font-mono text-xs text-slate-500">{branch.targetSha?.slice(0, 7) ?? '———'}</span>
+                    <span className={branchShaClass}>{branch.targetSha?.slice(0, 7) ?? '———'}</span>
                   </li>
                 ))}
               </ul>

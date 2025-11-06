@@ -25,7 +25,7 @@ describe('createDaemonServer stream routes', () => {
         streamCount: desired.size,
         connectedAt: new Date().toISOString(),
       }),
-      listStreams: () => Array.from(desired),
+      listStreams: () => Array.from(desired).map((id) => ({ id })),
       subscribeStreams: async (streams) => {
         const added: string[] = [];
         streams.forEach((stream) => {
@@ -76,7 +76,7 @@ describe('createDaemonServer stream routes', () => {
 
       const afterSubscribe = await fetch(`${baseUrl}/streams`);
       expect(afterSubscribe.status).toBe(200);
-      expect(await afterSubscribe.json()).toEqual({ streams: [baseStream] });
+      expect(await afterSubscribe.json()).toEqual({ streams: [{ id: baseStream }] });
 
       const unsubscribeRes = await fetch(`${baseUrl}/streams`, {
         method: 'DELETE',

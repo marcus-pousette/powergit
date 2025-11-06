@@ -8,6 +8,7 @@ import { useRepoFixture } from '@ps/test-fixture-bridge'
 import { useCollections } from '@tsdb/collections'
 import { gitStore, type PackRow, type TreeEntry } from '@ps/git-store'
 import type { Database } from '@ps/schema'
+import { useTheme } from '../ui/theme-context'
 
 const MonacoEditor = React.lazy(() => import('@monaco-editor/react'))
 const decoder = 'TextDecoder' in globalThis ? new TextDecoder('utf-8') : null
@@ -110,6 +111,8 @@ function sortFallbackTree(node: FallbackNode) {
 
 function Files() {
   const { orgId, repoId } = Route.useParams()
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
   const navigate = Route.useNavigate()
   const { branch: branchParam } = Route.useSearch()
   useRepoStreams(orgId, repoId)
@@ -496,7 +499,7 @@ function Files() {
       const error = treeErrors.get(path)
       if (error) {
         return (
-          <div className="text-xs text-red-400 px-2 py-1" key={`${path}-error`}>
+          <div className={`px-2 py-1 text-xs ${isDark ? 'text-red-300' : 'text-red-500'}`} key={`${path}-error`}>
             {error}
           </div>
         )
@@ -504,7 +507,7 @@ function Files() {
       if (!entries) {
         if (loadingDirs.has(path)) {
           return (
-            <div className="text-xs text-gray-400 px-2 py-1" key={`${path}-loading`}>
+            <div className={`px-2 py-1 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`} key={`${path}-loading`}>
               Loading…
             </div>
           )
@@ -517,43 +520,74 @@ function Files() {
         const entryPath = `${base}${entry.name}`
         if (entry.type === 'tree') {
           const expanded = expandedDirs.has(entryPath)
+          const dirButtonClass = isDark
+            ? 'flex w-full items-center rounded-md px-2 py-1 text-left text-xs text-slate-300 transition hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+            : 'flex w-full items-center rounded-md px-2 py-1 text-left text-xs text-slate-600 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+          const dirArrowClass = isDark ? 'mr-2 text-[10px] leading-none text-slate-400' : 'mr-2 text-[10px] leading-none text-slate-400'
+          const dirTextClass = isDark ? 'truncate font-medium text-slate-100' : 'truncate font-medium text-slate-700'
           return (
             <div key={entryPath} className="select-none">
               <button
                 type="button"
-                className="flex items-center w-full text-left text-xs px-2 py-1 rounded-md text-gray-200 hover:bg-[#2a2d2e] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007acc]/50"
+                className={dirButtonClass}
                 style={{ paddingLeft: depth * 12 }}
                 onClick={() => handleToggleDirectory(entryPath)}
                 data-testid="file-tree-directory"
               >
-                <span className="mr-1 text-[10px] leading-none text-gray-400">{expanded ? '▾' : '▸'}</span>
-                <span className="truncate">{entry.name}</span>
+                <span className={dirArrowClass}>{expanded ? '▾' : '▸'}</span>
+                <span className={dirTextClass}>{entry.name}</span>
               </button>
               {expanded && <div className="space-y-0.5">{renderTree(entryPath, depth + 1)}</div>}
             </div>
           )
         }
         const selected = selectedPath === entryPath
+        const fileButtonBase =
+          'flex w-full items-center rounded-md px-2 py-1 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+        const fileButtonState = selected
+          ? isDark
+            ? 'bg-emerald-500/20 text-emerald-200'
+            : 'bg-emerald-100 text-emerald-700'
+          : isDark
+            ? 'text-slate-200 hover:bg-slate-800'
+            : 'text-slate-700 hover:bg-slate-100'
+        const fileIconClass = isDark ? 'mr-2 text-[11px] leading-none text-slate-400' : 'mr-2 text-[11px] leading-none text-slate-400'
+        const fileNameClass = selected
+          ? isDark
+            ? 'truncate text-emerald-100'
+            : 'truncate text-emerald-800'
+          : 'truncate'
         return (
           <div key={entryPath} className="select-none">
             <button
               type="button"
-              className={`flex items-center w-full text-left text-sm px-2 py-1 rounded-md transition-colors ${
-                selected ? 'bg-[#094771] text-white' : 'text-gray-200 hover:bg-[#2a2d2e]'
-              } focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007acc]/50`}
+              className={`${fileButtonBase} ${fileButtonState}`}
               style={{ paddingLeft: depth * 12 + 16 }}
               onClick={() => handleFileSelect(entryPath)}
               data-testid="file-tree-file"
             >
-              <span className="mr-2 text-[11px] leading-none">📄</span>
-              <span className="truncate">{entry.name}</span>
+              <span className={fileIconClass}>📄</span>
+              <span className={fileNameClass}>{entry.name}</span>
             </button>
           </div>
         )
       })
     },
-    [expandedDirs, handleFileSelect, handleToggleDirectory, loadingDirs, selectedPath, treeCache, treeErrors],
+    [
+      expandedDirs,
+      handleFileSelect,
+      handleToggleDirectory,
+      isDark,
+      loadingDirs,
+      selectedPath,
+      treeCache,
+      treeErrors,
+    ],
   )
+
+  const branchSelectorClass = isDark
+    ? 'rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 shadow-inner transition focus:border-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+    : 'rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-inner transition focus:border-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
 
   const branchSelector = (
     <select
@@ -569,7 +603,7 @@ function Files() {
           search: { branch: next?.name ?? undefined } as any,
         })
       }}
-      className="border border-gray-300 rounded px-2 py-1 text-sm"
+      className={branchSelectorClass}
       data-testid="branch-selector"
     >
       {branchOptions.length === 0 && <option value="">No branches</option>}
@@ -581,25 +615,46 @@ function Files() {
     </select>
   )
 
+  const neutralStatusClass = isDark ? 'text-sm text-slate-400' : 'text-sm text-slate-600'
+  const neutralStatusCenterClass = `flex items-center justify-center h-full ${neutralStatusClass}`
+  const neutralStatusStackClass = `flex flex-col items-center justify-center h-full text-center gap-3 ${neutralStatusClass}`
+  const errorStatusClass = isDark ? 'text-sm text-red-400' : 'text-sm text-red-600'
+  const errorDetailClass = isDark ? 'text-xs text-red-300' : 'text-xs text-red-500'
+  const binaryMetaLabel = isDark ? 'font-medium text-slate-100' : 'font-medium text-slate-700'
+  const binaryMetaSubtle = isDark ? 'text-xs text-slate-400' : 'text-xs text-slate-500'
+  const binaryHelpText = isDark ? 'text-xs text-slate-400' : 'text-xs text-slate-500'
+  const primaryActionClass = isDark
+    ? 'inline-flex items-center gap-2 rounded-md bg-emerald-400 px-3 py-1 text-xs font-semibold text-emerald-950 shadow-lg shadow-emerald-500/30 transition hover:bg-emerald-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+    : 'inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+  const secondaryActionClass = isDark
+    ? 'inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+    : 'inline-flex items-center gap-2 rounded-md bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+  const retryButtonClass = isDark
+    ? 'inline-flex items-center gap-2 rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50'
+    : 'inline-flex items-center gap-2 rounded-md bg-red-500 px-3 py-1 text-xs font-medium text-white hover:bg-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300'
+  const blobHeaderClass = isDark
+    ? 'flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-700 bg-slate-900/70 px-4 py-2 text-xs text-slate-300'
+    : 'flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-600'
+
   const viewerContent = (() => {
     if (indexStatus === 'indexing') {
       return (
-        <div className="flex items-center justify-center h-full text-sm text-gray-500" data-testid="file-viewer-status">
+        <div className={neutralStatusCenterClass} data-testid="file-viewer-status">
           Repository content is syncing…
         </div>
       )
     }
     if (indexStatus === 'error') {
       return (
-        <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-2 text-sm text-red-600" data-testid="file-viewer-status">
+        <div className={`flex flex-col items-center justify-center h-full gap-2 px-6 text-center ${errorStatusClass}`} data-testid="file-viewer-status">
           <p>Failed to index repository data.</p>
-          {indexError ? <p className="text-xs text-red-400">{indexError}</p> : null}
+          {indexError ? <p className={errorDetailClass}>{indexError}</p> : null}
         </div>
       )
     }
     if (!selectedCommit) {
       return (
-        <div className="flex items-center justify-center h-full text-sm text-gray-500" data-testid="file-viewer-status">
+        <div className={neutralStatusCenterClass} data-testid="file-viewer-status">
           Select a branch to preview files.
         </div>
       )
@@ -607,33 +662,38 @@ function Files() {
     switch (viewerState.status) {
       case 'idle':
         return (
-          <div className="flex items-center justify-center h-full text-sm text-gray-500" data-testid="file-viewer-placeholder">
+          <div className={neutralStatusCenterClass} data-testid="file-viewer-placeholder">
             Select a file to preview its contents.
           </div>
         )
       case 'indexing':
         return (
-          <div className="flex items-center justify-center h-full text-sm text-gray-500" data-testid="file-viewer-status">
+          <div className={neutralStatusCenterClass} data-testid="file-viewer-status">
             {indexingLabel}
           </div>
         )
       case 'loading':
         return (
-          <div className="flex items-center justify-center h-full text-sm text-gray-500" data-testid="file-viewer-status">
+          <div className={neutralStatusCenterClass} data-testid="file-viewer-status">
             Loading {viewerState.path}…
           </div>
         )
       case 'error':
         return (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-3 text-sm text-red-600 px-6" data-testid="file-viewer-status">
+          <div
+            className={`flex flex-col items-center justify-center h-full gap-3 px-6 text-center ${errorStatusClass}`}
+            data-testid="file-viewer-status"
+          >
             <div>
-              <p className="font-medium">Unable to load {viewerState.path}.</p>
-              <p className="text-xs text-red-400">{viewerState.message}</p>
+              <p className={isDark ? 'font-medium text-red-200' : 'font-medium text-red-700'}>
+                Unable to load {viewerState.path}.
+              </p>
+              <p className={errorDetailClass}>{viewerState.message}</p>
             </div>
             <button
               type="button"
               onClick={() => handleFileSelect(viewerState.path)}
-              className="inline-flex items-center gap-2 rounded-md bg-[#611818] px-3 py-1 text-xs font-medium text-white hover:bg-[#7a1f1f] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#611818]/50"
+              className={retryButtonClass}
             >
               Retry
             </button>
@@ -641,18 +701,23 @@ function Files() {
         )
       case 'binary':
         return (
-          <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-3 text-sm text-gray-600" data-testid="file-viewer-status">
-            <div>
-              <p className="font-medium text-gray-700">{viewerState.path}</p>
-              <p className="mt-1 text-xs text-gray-500">
+          <div
+            className={`${neutralStatusStackClass} px-6`}
+            data-testid="file-viewer-status"
+          >
+            <div className="space-y-1">
+              <p className={binaryMetaLabel}>{viewerState.path}</p>
+              <p className={binaryMetaSubtle}>
                 Blob <code className="font-mono text-[11px]">{viewerState.oid}</code> • {formatBytes(viewerState.size)}
               </p>
             </div>
-            <p className="text-xs text-gray-500">Binary preview isn&apos;t available. Download the blob to inspect it locally.</p>
+            <p className={binaryHelpText}>
+              Binary preview isn&apos;t available. Download the blob to inspect it locally.
+            </p>
             <button
               type="button"
               onClick={downloadCurrentBlob}
-              className="inline-flex items-center gap-2 rounded-md bg-[#0e639c] px-3 py-1 text-xs font-medium text-white hover:bg-[#1177bb] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0e639c]/50"
+              className={primaryActionClass}
             >
               Download blob
             </button>
@@ -661,18 +726,19 @@ function Files() {
       case 'ready':
         return (
           <div className="flex h-full flex-col">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600">
+            <div className={blobHeaderClass}>
               <span>
-                <span className="font-semibold text-gray-700">Blob</span>{' '}
+                <span className={isDark ? 'font-semibold text-slate-100' : 'font-semibold text-slate-700'}>Blob</span>{' '}
                 <code className="font-mono text-[11px]">{viewerState.oid}</code>
               </span>
               <span>
-                <span className="font-semibold text-gray-700">Size</span> {formatBytes(viewerState.size)}
+                <span className={isDark ? 'font-semibold text-slate-100' : 'font-semibold text-slate-700'}>Size</span>{' '}
+                {formatBytes(viewerState.size)}
               </span>
               <button
                 type="button"
                 onClick={downloadCurrentBlob}
-                className="inline-flex items-center gap-2 rounded-md bg-[#0e639c] px-3 py-1 text-xs font-medium text-white hover:bg-[#1177bb] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0e639c]/50"
+                className={primaryActionClass}
               >
                 Download file
               </button>
@@ -680,7 +746,7 @@ function Files() {
             <div className="flex-1">
               <Suspense
                 fallback={
-                  <div className="flex items-center justify-center h-full text-sm text-gray-500">
+                  <div className={neutralStatusCenterClass}>
                     Preparing editor…
                   </div>
                 }
@@ -688,7 +754,7 @@ function Files() {
                 <MonacoEditor
                   path={viewerState.path}
                   defaultLanguage={inferLanguage(viewerState.path)}
-                  theme="vs-dark"
+                  theme={isDark ? 'vs-dark' : 'vs-light'}
                   value={viewerState.content}
                   options={{
                     readOnly: true,
@@ -708,53 +774,108 @@ function Files() {
     }
   })()
 
+  const branchCount = branchOptions.length
+  const packCount = packRows.length
+
+  const toolbarClass = isDark
+    ? 'rounded-3xl border border-slate-700 bg-slate-900 px-6 py-5 text-slate-100 shadow-xl shadow-slate-900/40'
+    : 'rounded-3xl border border-slate-200 bg-white px-6 py-5 text-slate-900 shadow-lg'
+  const repoHeadingClass = isDark ? 'text-xl font-semibold tracking-tight text-white' : 'text-xl font-semibold tracking-tight text-slate-900'
+  const repoSlashClass = isDark ? 'text-slate-500' : 'text-slate-400'
+  const toolbarStatsClass = isDark ? 'flex items-center gap-4 text-xs text-slate-300' : 'flex items-center gap-4 text-xs text-slate-600'
+  const branchLabelClass = isDark ? 'text-xs uppercase tracking-wide text-slate-400' : 'text-xs uppercase tracking-wide text-slate-500'
+  const repoSearchInputClass = isDark
+    ? 'w-48 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-300/40'
+    : 'w-48 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200'
+  const repoSearchShortcutClass = isDark ? 'pointer-events-none absolute inset-y-0 right-2 flex items-center text-[10px] text-slate-500' : 'pointer-events-none absolute inset-y-0 right-2 flex items-center text-[10px] text-slate-400'
+  const treePanelClass = isDark
+    ? 'rounded-2xl border border-slate-700 bg-slate-900/70 text-slate-200 shadow-lg shadow-slate-900/40'
+    : 'rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm'
+  const treeHeaderClass = isDark
+    ? 'border-b border-slate-700/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400'
+    : 'border-b border-slate-200 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400'
+  const treeBodyClass = isDark ? 'space-y-0.5 p-3 text-sm text-slate-200' : 'space-y-0.5 p-3 text-sm text-slate-700'
+  const fallbackInfoClass = isDark
+    ? 'space-y-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200'
+    : 'space-y-1 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700'
+  const fallbackNoticeClass = isDark
+    ? 'rounded-lg border border-slate-700 px-3 py-4 text-xs text-slate-300'
+    : 'rounded-lg border border-slate-200 px-3 py-4 text-xs text-slate-500'
+  const treeEmptyClass = fallbackNoticeClass
+  const viewerContainerClass = isDark
+    ? 'flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/70 text-slate-200 shadow-lg shadow-slate-900/40'
+    : 'flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm'
+  const viewerHeaderClass = isDark
+    ? 'border-b border-slate-700 bg-slate-900/60 px-4 py-2 text-sm font-medium text-slate-100'
+    : 'border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700'
+
   return (
-    <div className="space-y-4" data-testid="file-explorer-view">
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h3 className="font-semibold text-lg text-gray-900">Repository files ({orgId}/{repoId})</h3>
-          <p className="text-sm text-gray-500">Browse files replicated via PowerSync. Switch branches to inspect other snapshots.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-600">Branch</span>
-          {branchSelector}
+    <div className="space-y-5" data-testid="file-explorer-view">
+      <div className={toolbarClass} data-testid="repo-toolbar">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className={repoHeadingClass}>
+            {orgId}
+            <span className={repoSlashClass}>/</span>
+            {repoId}
+          </div>
+          <div className={toolbarStatsClass}>
+            <span>🌿 {branchCount} branch{branchCount === 1 ? '' : 'es'}</span>
+            <span>📦 {packCount} pack{packCount === 1 ? '' : 's'}</span>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <label htmlFor="branch-selector" className={branchLabelClass}>
+              Branch
+            </label>
+            {branchSelector}
+            <div className="relative hidden sm:block">
+              <input
+                id="repo-search"
+                type="search"
+                placeholder="Go to file"
+                className={repoSearchInputClass}
+              />
+              <span className={repoSearchShortcutClass}>⇧t</span>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row gap-4 min-h-[520px]">
-        <div className="lg:w-72 w-full bg-[#1e1e1e] text-gray-200 rounded-lg border border-gray-700 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-700 text-xs uppercase tracking-[0.2em] text-gray-400">
-            Explorer
+      <div className="grid gap-5 lg:grid-cols-[320px,1fr] min-h-[540px]">
+        <div className={treePanelClass}>
+          <div className={treeHeaderClass}>
+            Files
           </div>
-          <div className="p-2 text-sm space-y-0.5" data-testid="file-explorer-tree">
+          <div className={treeBodyClass} data-testid="file-explorer-tree">
             {indexStatus !== 'ready' ? (
               hasFallbackTree ? (
                 <div className="space-y-2">
-                  <div className="text-xs text-gray-500 px-2 space-y-1">
+                  <div className={fallbackInfoClass}>
                     <div>{indexingLabel}</div>
                     {indexProgress.status !== 'error' ? (
-                      <div>Showing recently replicated paths until packs finish indexing.</div>
+                      <div className={isDark ? 'text-emerald-200/80' : undefined}>
+                        Showing recently replicated paths while pack indexing completes.
+                      </div>
                     ) : indexError ? (
-                      <div className="text-red-400">{indexError}</div>
+                      <div className={isDark ? 'text-red-300' : 'text-red-500'}>{indexError}</div>
                     ) : null}
                   </div>
                   <div className="space-y-0.5">
-                    {renderFallbackTree(fallbackTree, 0, handleFileSelect, selectedPath)}
+                    {renderFallbackTree(fallbackTree, 0, handleFileSelect, selectedPath, isDark)}
                   </div>
                 </div>
               ) : (
-                <div className="text-xs text-gray-500 px-2 py-4">{indexingLabel}</div>
+                <div className={fallbackNoticeClass}>{indexingLabel}</div>
               )
             ) : selectedCommit ? (
               renderTree('', 0)
             ) : (
-              <div className="text-xs text-gray-500 px-2 py-4">No commits available.</div>
+              <div className={treeEmptyClass}>No commits available.</div>
             )}
           </div>
         </div>
 
-        <div className="flex-1 min-h-[420px] bg-white rounded-lg border border-gray-200 overflow-hidden flex flex-col" data-testid="file-viewer">
-          <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-700 truncate" data-testid="file-viewer-header">
+        <div className={viewerContainerClass} data-testid="file-viewer">
+          <div className={viewerHeaderClass} data-testid="file-viewer-header">
             {selectedPath ?? 'Select a file to preview'}
           </div>
           <div className="flex-1">{viewerContent}</div>
@@ -807,29 +928,45 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unitIndex]}`
 }
 
-function renderFallbackTree(node: FallbackNode, depth: number, onSelect: (path: string) => void, selectedPath: string | null): React.ReactNode {
+function renderFallbackTree(
+  node: FallbackNode,
+  depth: number,
+  onSelect: (path: string) => void,
+  selectedPath: string | null,
+  isDark: boolean,
+): React.ReactNode {
   if (node.type !== 'directory') {
     const selected = selectedPath === node.path
     return (
       <div key={`fallback-${node.path}`} className="select-none">
         <button
           type="button"
-          className={`flex items-center w-full text-left text-sm px-2 py-1 rounded-md transition-colors ${
-            selected ? 'bg-[#094771] text-white' : 'text-gray-200 hover:bg-[#2a2d2e]'
-          } focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007acc]/50`}
+          className={`flex w-full items-center rounded-md px-2 py-1 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40 ${
+            selected
+              ? isDark
+                ? 'bg-emerald-500/20 text-emerald-200'
+                : 'bg-emerald-100 text-emerald-700'
+              : isDark
+                ? 'text-slate-200 hover:bg-slate-800'
+                : 'text-slate-700 hover:bg-slate-100'
+          }`}
           style={{ paddingLeft: depth * 12 + 16 }}
           onClick={() => onSelect(node.path)}
           data-testid="file-tree-file"
         >
-          <span className="mr-2 text-[11px] leading-none">📄</span>
-          <span className="truncate">{node.name}</span>
+          <span className={`mr-2 text-[11px] leading-none ${isDark ? 'text-slate-400' : 'text-slate-400'}`}>📄</span>
+          <span className={`truncate ${selected ? (isDark ? 'text-emerald-100' : 'text-emerald-800') : ''}`}>{node.name}</span>
         </button>
       </div>
     )
   }
 
   if (depth === 0 && node.children.length === 0) {
-    return <div className="text-xs text-gray-500 px-2 py-4">No files detected yet.</div>
+    return (
+      <div className={`px-2 py-4 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+        No files detected yet.
+      </div>
+    )
   }
 
   return node.children.map((child) => {
@@ -837,16 +974,18 @@ function renderFallbackTree(node: FallbackNode, depth: number, onSelect: (path: 
       return (
         <div key={`fallback-${child.path}`} className="select-none">
           <div
-            className="flex items-center w-full text-left text-xs px-2 py-1 text-gray-400"
+            className={`flex w-full items-center px-2 py-1 text-left text-xs ${isDark ? 'text-slate-400' : 'text-slate-400'}`}
             style={{ paddingLeft: depth * 12 }}
           >
-            <span className="mr-1 text-[10px] leading-none text-gray-500">▸</span>
+            <span className={`mr-1 text-[10px] leading-none ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>▸</span>
             <span className="truncate">{child.name}</span>
           </div>
-          <div className="ml-3 space-y-0.5">{renderFallbackTree(child, depth + 1, onSelect, selectedPath)}</div>
+          <div className="ml-3 space-y-0.5">
+            {renderFallbackTree(child, depth + 1, onSelect, selectedPath, isDark)}
+          </div>
         </div>
       )
     }
-    return renderFallbackTree(child, depth, onSelect, selectedPath)
+    return renderFallbackTree(child, depth, onSelect, selectedPath, isDark)
   })
 }

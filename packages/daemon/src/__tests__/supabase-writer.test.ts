@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UpdateType, type CrudEntry, type CrudTransaction } from '@powersync/common';
 import type { PowerSyncDatabase } from '@powersync/node';
-
-const createClientMock = vi.fn();
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { SupabaseWriter } from '../supabase-writer.js';
 
 interface SupabaseUpsertCall {
   table: string;
@@ -18,13 +18,6 @@ interface SupabaseDeleteCall {
 type SupabaseStub = ReturnType<typeof createSupabaseDouble>;
 
 let currentSupabaseStub: SupabaseStub = createSupabaseDouble();
-
-vi.mock('@supabase/supabase-js', () => ({
-  createClient: (...args: unknown[]) => createClientMock(...args),
-}));
-
-// Import after mocking.
-import { SupabaseWriter } from '../supabase-writer.js';
 
 function createSupabaseDouble() {
   const upsertCalls: SupabaseUpsertCall[] = [];
@@ -104,8 +97,6 @@ async function waitForExpect(assertFn: () => void, timeoutMs = 1_000, intervalMs
 describe('SupabaseWriter', () => {
   beforeEach(() => {
     currentSupabaseStub = createSupabaseDouble();
-    createClientMock.mockReset();
-    createClientMock.mockImplementation(() => currentSupabaseStub);
   });
 
   it('upserts PowerSync mutations to Supabase with pack bytes normalized', async () => {
@@ -154,7 +145,7 @@ describe('SupabaseWriter', () => {
 
     const writer = new SupabaseWriter({
       database: database as unknown as PowerSyncDatabase,
-      config: { url: 'http://example.local', apiKey: 'service-key' },
+      client: currentSupabaseStub as unknown as SupabaseClient,
       pollIntervalMs: 10,
       retryDelayMs: 50,
       batchSize: 4,
@@ -198,8 +189,6 @@ describe('SupabaseWriter', () => {
       column: 'id',
       values: ['demo/infra/refs/heads/old'],
     });
-
-    expect(createClientMock).toHaveBeenCalledWith('http://example.local', 'service-key', expect.any(Object));
   });
 
   it('merges previous values when upserting partial updates', async () => {
@@ -227,7 +216,7 @@ describe('SupabaseWriter', () => {
 
     const writer = new SupabaseWriter({
       database: database as unknown as PowerSyncDatabase,
-      config: { url: 'http://example.local', apiKey: 'service-key' },
+      client: currentSupabaseStub as unknown as SupabaseClient,
       pollIntervalMs: 5,
     });
 

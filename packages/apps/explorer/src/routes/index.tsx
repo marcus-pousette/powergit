@@ -5,12 +5,14 @@ import { useLiveQuery } from '@tanstack/react-db'
 import { useCollections } from '@tsdb/collections'
 import { GithubImportCard } from '../components/GithubImportCard'
 import type { Database } from '@ps/schema'
+import { useTheme } from '../ui/theme-context'
 
 export const Route = createFileRoute('/' as any)({
   component: Home,
 })
 
 export function Home() {
+  const { theme } = useTheme()
   const { refs } = useCollections()
   type RefRow = Pick<Database['refs'], 'org_id' | 'repo_id' | 'name' | 'updated_at'>
   const { data: refRows = [] } = useLiveQuery(
@@ -26,45 +28,47 @@ export function Home() {
     [refs],
   ) as { data: Array<RefRow> }
 
-  const orgSummaries = React.useMemo(() => {
+  const repoSummaries = React.useMemo(() => {
     const map = new Map<
       string,
       {
-        repoIds: Set<string>
-        latestUpdatedAt: string | null
+        orgId: string
+        repoId: string
+        branches: Set<string>
+        updatedAt: string | null
       }
     >()
 
     for (const row of refRows) {
-      const orgId = row.org_id ?? ''
-      if (!orgId) continue
-      const repoId = row.repo_id ?? ''
-      const entry = map.get(orgId) ?? { repoIds: new Set<string>(), latestUpdatedAt: null }
-      if (repoId) {
-        entry.repoIds.add(repoId)
+      const orgId = row.org_id?.trim()
+      const repoId = row.repo_id?.trim()
+      if (!orgId || !repoId) continue
+      const key = `${orgId}/${repoId}`
+      const entry =
+        map.get(key) ?? { orgId, repoId, branches: new Set<string>(), updatedAt: null }
+      if (row.name) {
+        entry.branches.add(row.name)
       }
       if (row.updated_at) {
-        if (!entry.latestUpdatedAt || entry.latestUpdatedAt < row.updated_at) {
-          entry.latestUpdatedAt = row.updated_at
+        if (!entry.updatedAt || entry.updatedAt < row.updated_at) {
+          entry.updatedAt = row.updated_at
         }
       }
-      map.set(orgId, entry)
+      map.set(key, entry)
     }
 
-    return Array.from(map.entries())
-      .map(([orgId, value]) => ({
-        orgId,
-        repoIds: Array.from(value.repoIds).sort(),
-        repoCount: value.repoIds.size,
-        lastUpdatedAt: value.latestUpdatedAt,
-      }))
-      .sort((a, b) => a.orgId.localeCompare(b.orgId))
+    return Array.from(map.values()).sort((a, b) => {
+      const aTime = a.updatedAt ? Date.parse(a.updatedAt) : 0
+      const bTime = b.updatedAt ? Date.parse(b.updatedAt) : 0
+      if (aTime === bTime) {
+        return `${a.orgId}/${a.repoId}`.localeCompare(`${b.orgId}/${b.repoId}`)
+      }
+      return bTime - aTime
+    })
   }, [refRows])
 
-  const isEmpty = orgSummaries.length === 0
-
   const formatTimestamp = React.useCallback((iso: string | null | undefined) => {
-    if (!iso) return '—'
+    if (!iso) return '–'
     try {
       return new Date(iso).toLocaleString()
     } catch {
@@ -72,68 +76,85 @@ export function Home() {
     }
   }, [])
 
-  return (
-    <div className="space-y-6">
-      <header className="space-y-2">
-        <h2 className="text-xl font-semibold text-slate-900">Your PowerSync Repositories</h2>
-        <p className="text-sm text-slate-600">
-          Explore organisations and repositories replicated into your local PowerSync database. Run <code>psgit demo-seed</code> after
-          authentication to populate a sample repo.
-        </p>
-      </header>
+  const isDark = theme === 'dark'
+  const repoCardBase = isDark
+    ? 'group flex items-center justify-between rounded-2xl border border-slate-700 bg-slate-900 px-5 py-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl hover:shadow-slate-900/40'
+    : 'group flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg'
+  const repoBadge = isDark
+    ? 'rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300'
+    : 'rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600'
+  const openButtonClasses = isDark
+    ? 'inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+    : 'inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
 
+  return (
+    <div className="space-y-8">
       <GithubImportCard />
 
-      {isEmpty ? (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white/70 px-6 py-8 text-center text-slate-500">
-          <p className="text-sm">
-            No organisations found yet. Push a repository via the PowerSync remote or run <code>psgit demo-seed</code> to load demo data.
-          </p>
-        </div>
-      ) : (
-        <ul className="grid gap-4 sm:grid-cols-2">
-          {orgSummaries.map((org) => (
-            <li
-              key={org.orgId}
-              className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md focus-within:ring-2 focus-within:ring-blue-200"
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-900">{org.orgId}</h3>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">PowerSync Organisation</p>
-                </div>
-                <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
-                  {org.repoCount} repo{org.repoCount === 1 ? '' : 's'}
-                </span>
-              </div>
-              {org.repoIds.length > 0 ? (
-                <div className="mt-3 space-y-1 text-sm text-slate-600">
-                  <div className="font-medium text-slate-700">Repositories</div>
-                  <ul className="list-disc pl-4">
-                    {org.repoIds.map((repoId) => (
-                      <li key={repoId} className="leading-relaxed">
-                        {repoId}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              <div className="mt-3 text-xs text-slate-500">
-                Last updated: <span className="font-medium text-slate-600">{formatTimestamp(org.lastUpdatedAt)}</span>
-              </div>
-              <div className="mt-4">
-                <Link
-                  to="/org/$orgId"
-                  params={{ orgId: org.orgId }}
-                  className="text-sm font-medium text-blue-600 hover:text-blue-500"
-                >
-                  View activity →
-                </Link>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      <section className="space-y-4">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className={`text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+              Recently explored repositories
+            </h2>
+            <p className={`text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              Repositories streamed into your local PowerSync replica.
+            </p>
+          </div>
+          <span className={repoBadge}>
+            {repoSummaries.length} repo{repoSummaries.length === 1 ? '' : 's'}
+          </span>
+        </header>
+
+        {repoSummaries.length === 0 ? (
+          <div
+            className={`rounded-2xl border border-dashed px-6 py-8 text-center text-sm ${
+              isDark ? 'border-slate-700 text-slate-400 bg-slate-900/60' : 'border-slate-200 text-slate-500 bg-white/80'
+            }`}
+          >
+            <p>
+              Nothing here yet. Run <code>psgit demo-seed</code> or explore a repository above to populate this list.
+            </p>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {repoSummaries.map((repo) => {
+              const branchCount = Array.from(repo.branches).filter((name) => name && name !== 'HEAD').length
+              const repoKey = `${repo.orgId}/${repo.repoId}`
+              return (
+                <li key={repoKey} className={repoCardBase}>
+                  <div className="space-y-1">
+                    <div className={`text-base font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                      {repo.orgId}
+                      <span className="text-slate-400">/</span>
+                      {repo.repoId}
+                    </div>
+                    <div className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {branchCount} branch{branchCount === 1 ? '' : 'es'} · Updated {formatTimestamp(repo.updatedAt)}
+                    </div>
+                  </div>
+                  <Link
+                    to="/org/$orgId/repo/$repoId/files"
+                    params={{ orgId: repo.orgId, repoId: repo.repoId }}
+                    className={openButtonClasses}
+                    data-testid="repository-open-button"
+                  >
+                    Open
+                    <span
+                      aria-hidden
+                      className={`${
+                        isDark ? 'text-slate-500 group-hover:text-slate-300' : 'text-slate-400 group-hover:text-slate-500'
+                      }`}
+                    >
+                      →
+                    </span>
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </section>
     </div>
   )
 }

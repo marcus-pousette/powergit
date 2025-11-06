@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { PowerSyncDatabase, SyncClientImplementation, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web'
+import { PowerSyncDatabase, SyncClientImplementation } from '@powersync/web'
 import { PowerSyncContext } from '@powersync/react'
 import { AppSchema } from './schema'
 import { Connector } from './connector'
@@ -100,38 +100,19 @@ export function useDaemonAuthSnapshot(): DaemonAuthSnapshot {
   return React.useContext(DaemonAuthContext)
 }
 
-function resolveVfs(): WASQLiteVFS {
-  const hasOpfs =
-    typeof navigator !== 'undefined' &&
-    typeof (navigator as Navigator & { storage?: StorageManager }).storage?.getDirectory === 'function' &&
-    typeof SharedArrayBuffer !== 'undefined'
-
-  if (hasOpfs) {
-    return WASQLiteVFS.OPFSCoopSyncVFS
-  }
-
-  if (typeof indexedDB !== 'undefined') {
-    return WASQLiteVFS.IDBBatchAtomicVFS
-  }
-
-  return WASQLiteVFS.AccessHandlePoolVFS
-}
-
 export function createPowerSync() {
   const supportsWorker = typeof Worker !== 'undefined'
-  const flags = {
-    enableMultiTabs: false,
-    useWebWorker: supportsWorker && isMultiTabCapable,
-    externallyUnload: true,
-  }
   const db = new PowerSyncDatabase({
     schema: AppSchema,
-    database: new WASQLiteOpenFactory({
+    database: {
       dbFilename: 'repo-explorer.db',
-      vfs: resolveVfs(),
-      flags,
-    }),
-    flags,
+    },
+    flags: {
+      disableSSRWarning: true,
+      enableMultiTabs: false,
+      useWebWorker: supportsWorker && isMultiTabCapable,
+      externallyUnload: true,
+    },
   })
   if (import.meta.env.DEV) {
     const originalClose = db.close.bind(db)

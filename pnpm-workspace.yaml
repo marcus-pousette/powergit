@@ -1,6 +1,2 @@
 packages:
   - "packages/**/*"
-  - "third_party/powersync-tanstack-db/packages/db"
-  - "third_party/powersync-tanstack-db/packages/db-ivm"
-  - "third_party/powersync-tanstack-db/packages/react-db"
-  - "third_party/powersync-tanstack-db/packages/powersync-db-collection"

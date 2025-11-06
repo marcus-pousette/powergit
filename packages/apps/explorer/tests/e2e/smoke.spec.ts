@@ -55,7 +55,7 @@ test.describe('Explorer repo lists', () => {
     if (!page.url().endsWith('/')) {
       throw new Error(`Expected to land on explorer home, current URL: ${page.url()}`)
     }
-    await expect(page.getByRole('heading', { name: 'Your PowerSync Repositories' })).toBeVisible()
+    await expect(page.getByLabel('Explore a Git repository')).toBeVisible()
   })
 
   test.afterEach(async ({ page }) => {
@@ -99,10 +99,9 @@ test.describe('Explorer repo lists', () => {
 
   test('renders file explorer skeleton while packs index', async ({ page }) => {
     await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
-  await setRepoFixture(page, REPO_FIXTURE)
+    await setRepoFixture(page, REPO_FIXTURE)
 
-    const heading = page.getByRole('heading', { name: `Repository files (${ORG_ID}/${REPO_ID})` })
-    await expect(heading).toBeVisible()
+    await expect(page.getByTestId('repo-toolbar')).toBeVisible()
     await expect(page.getByTestId('branch-selector')).toBeVisible()
     await expect(page.getByTestId('file-explorer-tree')).toContainText('Repository content is syncing')
     await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
@@ -176,6 +175,18 @@ test.describe('Explorer repo lists', () => {
     await setRepoFixture(page, REPO_FIXTURE)
     await expect(page).toHaveURL(/branch=develop/)
     await expect(page.getByTestId('branch-selector')).toHaveValue('develop')
+  })
+
+  test('renders file tree after reloading the explorer view', async ({ page }) => {
+    await page.goto(`${BASE_URL}/org/${ORG_ID}/repo/${REPO_ID}/files`)
+    await setRepoFixture(page, REPO_FIXTURE)
+
+    const tree = page.getByTestId('file-explorer-tree')
+    await expect(tree).toContainText('README.md')
+
+    await page.reload()
+    await setRepoFixture(page, REPO_FIXTURE)
+    await expect(tree).toContainText('README.md')
   })
 
   test('offers a download CTA for binary blobs in the viewer', async ({ page }) => {

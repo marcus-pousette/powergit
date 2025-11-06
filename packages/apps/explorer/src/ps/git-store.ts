@@ -134,6 +134,9 @@ export class GitObjectStore {
 
     if (!appended) {
       if (this.processingJob) await this.processingJob
+      if (this.progress.status === 'idle') {
+        this.updateProgress({ status: 'ready', processed: 0, total: 0, error: null })
+      }
       return
     }
 

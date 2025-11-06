@@ -13,8 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@powersync/common": "1.40.0",
-    "@powersync/node": "0.12.0",
+    "@powersync/common": "1.41.0",
+    "@powersync/node": "0.13.0",
     "@shared/core": "workspace:*",
     "@supabase/supabase-js": "^2.48.1",
     "better-sqlite3": "^12.4.1",

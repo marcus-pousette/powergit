@@ -278,5 +278,31 @@ test.describe('Explorer GitHub import (live PowerSync)', () => {
       { timeout: failFastTimeout },
     )
     await expect(branchItems.first()).toBeVisible()
+
+    await page.goto(`${BASE_URL}/org/${POWERSYNC_ORG}/repo/${POWERSYNC_REPO}/files`, {
+      timeout: WAIT_TIMEOUT_MS,
+    })
+    const fileTree = page.getByTestId('file-explorer-tree')
+    await expect(fileTree).toContainText('README.md', { timeout: WAIT_TIMEOUT_MS })
+
+    const readmeEntry = page.getByTestId('file-tree-file').filter({ hasText: 'README.md' }).first()
+    await readmeEntry.click()
+
+    await expect(page.getByTestId('file-viewer-header')).toContainText('README.md', {
+      timeout: WAIT_TIMEOUT_MS,
+    })
+    const viewerLines = page.locator('[data-testid="file-viewer"] .view-lines')
+    await expect(viewerLines).toContainText('A full-text search library', { timeout: WAIT_TIMEOUT_MS })
+
+    await page.reload({ timeout: WAIT_TIMEOUT_MS })
+    await waitForPowerSyncConnected(page, failFastTimeout, WAIT_INTERVAL_MS)
+    await expect(fileTree).toContainText('README.md', { timeout: WAIT_TIMEOUT_MS })
+
+    const readmeEntryAfterReload = page.getByTestId('file-tree-file').filter({ hasText: 'README.md' }).first()
+    await readmeEntryAfterReload.click()
+    await expect(page.getByTestId('file-viewer-header')).toContainText('README.md', {
+      timeout: WAIT_TIMEOUT_MS,
+    })
+    await expect(viewerLines).toContainText('A full-text search library', { timeout: WAIT_TIMEOUT_MS })
   })
 })

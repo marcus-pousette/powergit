@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRepoStreamTargets, type PowerSyncImportJob } from '@shared/core';
+import type { StreamSubscriptionTarget } from './server.js';
 
 type StepId = 'clone' | 'prepare' | 'push' | 'subscribe' | 'cleanup';
 
@@ -16,11 +17,6 @@ const STEP_DEFINITIONS: Array<{ id: StepId; label: string }> = [
 ];
 
 const REMOTE_NAME = 'powersync';
-
-export interface StreamSubscriptionTarget {
-  id: string;
-  parameters?: Record<string, unknown> | null;
-}
 
 export interface GithubImportRequest {
   repoUrl: string;

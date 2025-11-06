@@ -1,17 +1,10 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CrudEntry, CrudTransaction } from '@powersync/common';
 import type { AbstractPowerSyncDatabase, PowerSyncDatabase } from '@powersync/node';
 
-export interface SupabaseWriterConfig {
-  url: string;
-  apiKey: string;
-  schema?: string;
-  accessToken?: string;
-}
-
 export interface SupabaseWriterOptions {
   database?: PowerSyncDatabase;
-  config: SupabaseWriterConfig;
+  client: SupabaseClient;
   pollIntervalMs?: number;
   retryDelayMs?: number;
   batchSize?: number;
@@ -33,9 +26,6 @@ const TABLES: Record<string, TableMetadata> = {
 export class SupabaseWriter {
   private readonly database?: PowerSyncDatabase;
   private readonly supabase: SupabaseClient;
-  private readonly apiKey: string;
-  private readonly schema: string;
-  private accessToken: string | null;
   private readonly pollIntervalMs: number;
   private readonly retryDelayMs: number;
   private readonly failureThreshold: number;
@@ -47,39 +37,12 @@ export class SupabaseWriter {
 
   constructor(options: SupabaseWriterOptions) {
     this.database = options.database;
-    const { apiKey, accessToken } = options.config;
-    this.apiKey = apiKey;
-    this.schema = options.config.schema ?? 'public';
-    this.accessToken = accessToken && accessToken.trim().length > 0 ? accessToken.trim() : null;
+    this.supabase = options.client;
     this.debug = (process.env.POWERSYNC_SUPABASE_WRITER_DEBUG ?? 'false').toLowerCase() === 'true';
 
-    const scopedFetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      const headers = new Headers((init && init.headers) ?? {});
-      headers.set('apikey', this.apiKey);
-      const bearer = this.accessToken ?? this.apiKey;
-      headers.set('Authorization', `Bearer ${bearer}`);
-      if (this.schema && this.schema !== 'public') {
-        headers.set('Accept-Profile', this.schema);
-        headers.set('Content-Profile', this.schema);
-      }
-      return fetch(input, { ...init, headers });
-    };
-
-    this.supabase = createClient(options.config.url, apiKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-      db: { schema: this.schema },
-      global: {
-        fetch: scopedFetch,
-      },
-    }) as SupabaseClient;
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.retryDelayMs = options.retryDelayMs ?? 5_000;
     this.failureThreshold = Math.max(1, options.failureThreshold ?? 5);
-  }
-
-  setAccessToken(token: string | null | undefined): void {
-    const trimmed = typeof token === 'string' ? token.trim() : '';
-    this.accessToken = trimmed.length > 0 ? trimmed : null;
   }
 
   start(): void {
