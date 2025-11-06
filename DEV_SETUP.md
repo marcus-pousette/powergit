@@ -4,7 +4,7 @@
 This monorepo prototypes:
 - **git-remote-powersync** (TS remote helper for `powersync::https://…/orgs/<org_slug>/repos/<repo_slug>`)
 - **Repo Explorer (React + Vite + Tailwind)** wired to **@powersync/web + @powersync/react**
-- **TanStack DB integration** via the adapter from PR **powersync-ja/temp-tanstack-db#1** (`@tanstack/powersync-db-collection`)
+- **TanStack DB integration** using the upstream `@tanstack/powersync-db-collection` package (0.1.1+)
 
 Open **Agents.md** for the architecture.
 
@@ -138,19 +138,9 @@ The command performs the CLI end-to-end test suite against your staged stack, co
 
 ## Development notes
 
-### PowerSync adapter pin
+### PowerSync adapter version
 
-We pin `@tanstack/powersync-db-collection` to the PR branch via `pnpm.overrides`. Replace it with a commit SHA if you prefer:
-
-```json
-{
-  "pnpm": {
-    "overrides": {
-      "@tanstack/powersync-db-collection": "github:powersync-ja/temp-tanstack-db#c887d90"
-    }
-  }
-}
-```
+We pull `@tanstack/powersync-db-collection` directly from npm (root `package.json` pins `^0.1.1`). If you want to trial a prerelease or a specific commit, tweak the `pnpm.overrides` block in `package.json` before running `pnpm install`.
 
 ### Explorer profile template
 

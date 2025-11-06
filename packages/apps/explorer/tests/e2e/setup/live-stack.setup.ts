@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@playwright/test'
 import { loadProfileEnvironment } from '../../../../../cli/src/profile-env.js'
+import { ensureDaemonSupabaseAuth } from '../../../../../../scripts/dev-shared.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -82,13 +83,13 @@ async function loginDaemonIfNeeded(): Promise<void> {
   if (status?.status === 'ready') {
     return
   }
-  const loginResult = spawnSync('pnpm', ['--filter', '@pkg/cli', 'exec', 'tsx', 'src/bin.ts', 'login', '--guest'], {
-    cwd: repoRoot,
-    env: { ...process.env },
-    stdio: 'inherit',
+  const authResult = await ensureDaemonSupabaseAuth({
+    env: process.env,
+    metadata: { initiatedBy: 'playwright-e2e' },
+    logger: console,
   })
-  if (loginResult.status !== 0) {
-    throw new Error('Command failed (authenticate daemon guest): pnpm --filter @pkg/cli exec tsx src/bin.ts login --guest')
+  if (!authResult.status || authResult.status.status !== 'ready') {
+    throw new Error('Failed to authenticate daemon via Supabase for Playwright tests.')
   }
 }
 

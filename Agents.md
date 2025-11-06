@@ -1,7 +1,7 @@
 # Agents.md — PowerSync “Sync Streams” Git Remote (Org‑Scoped) + TanStack DB
 
 ## Why
-We’re showcasing **local‑first Git** where the **local porcelain** is system git, and the **remote transport** (clone/fetch/push) is handled by a PowerSync‑backed remote helper. The **web explorer** uses **TanStack DB** collections backed by PowerSync via the **PowerSync↔TanStack adapter** from PR `powersync-ja/temp-tanstack-db#1`.
+We’re showcasing **local‑first Git** where the **local porcelain** is system git, and the **remote transport** (clone/fetch/push) is handled by a PowerSync‑backed remote helper. The **web explorer** uses **TanStack DB** collections backed by PowerSync via the upstream **`@tanstack/powersync-db-collection`** package.
 
 - **Control plane:** refs/commits/inventory in Postgres (streamed to clients via **Sync Streams**)
 - **Data plane:** Git packfiles in S3‑compatible storage (e.g., Supabase Storage)
@@ -20,14 +20,14 @@ orgs/{org_id}/repos/{repo_id}/file_changes
 orgs/{org_id}/repos/{repo_id}/objects
 ```
 
-## Adapter (from PR)
-Using `@tanstack/powersync-db-collection` from the PR to create TanStack DB collections on top of PowerSync SQLite.
+## Adapter (TanStack)
+Using `@tanstack/powersync-db-collection` from the official TanStack DB release to create TanStack DB collections on top of PowerSync SQLite.
 Key entry points:
 - `powerSyncCollectionOptions({ database, tableName, schema? })`
 - `convertPowerSyncSchemaToSpecs(AppSchema)`
 - `PowerSyncTransactor` for explicit TanStack → PowerSync transaction persistence
 
-See **README.md** for how to install directly from the PR branch during development.
+The package is published on npm—install/override as needed via `pnpm install @tanstack/powersync-db-collection`.
 
 ## Agent workflow
 - While you work, keep `todo.md` up to date with progress, blockers, and next steps so the next agent has continuity.

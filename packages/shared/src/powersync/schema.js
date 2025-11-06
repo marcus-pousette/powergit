@@ -59,7 +59,11 @@ export function buildPowerSyncSchema(factories) {
             }
             : undefined;
         const tableInstance = factories.createTable(columns, options);
-        return [tableName, tableInstance];
+        const candidate = tableInstance;
+        const namedTable = typeof (candidate === null || candidate === void 0 ? void 0 : candidate.copyWithName) === 'function'
+            ? candidate.copyWithName(tableName)
+            : tableInstance;
+        return [tableName, namedTable];
     }));
     return { schema: factories.createSchema(tables), tables };
 }

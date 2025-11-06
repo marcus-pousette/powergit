@@ -102,7 +102,9 @@ export function buildPowerSyncSchema<TSchema, TTable, TColumnMap extends ColumnF
           }
         : undefined
       const tableInstance = factories.createTable(columns, options)
-      return [tableName, tableInstance]
+      const candidate = tableInstance as unknown as { copyWithName?: (name: string) => TTable }
+      const namedTable = typeof candidate.copyWithName === 'function' ? candidate.copyWithName(tableName) : tableInstance
+      return [tableName, namedTable]
     }),
   ) as Record<PowerSyncTableName, TTable>
 

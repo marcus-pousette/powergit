@@ -123,6 +123,45 @@ async function createHelperExecutable(dir: string): Promise<string> {
   return helperPath
 }
 
+function firstDefined(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (trimmed.length > 0) {
+      return trimmed
+    }
+  }
+  return null
+}
+
+function randomSlug(prefix: string): string {
+  const timestamp = Date.now().toString(36)
+  const random = Math.random().toString(36).slice(2, 8)
+  return `${prefix}-${timestamp}-${random}`.replace(/[^a-z0-9-]/gi, '').toLowerCase()
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '')
+}
+
+function resolveTestRemoteUrl(options: { endpoint: string; stackEnv: Record<string, string> | null }): string {
+  const explicit = firstDefined(
+    process.env.PSGIT_TEST_REMOTE_URL,
+    options.stackEnv?.PSGIT_TEST_REMOTE_URL,
+    process.env.POWERSYNC_SEED_REMOTE_URL,
+    options.stackEnv?.POWERSYNC_SEED_REMOTE_URL,
+  )
+  if (explicit) return explicit
+
+  const endpoint =
+    firstDefined(options.stackEnv?.POWERSYNC_ENDPOINT, process.env.POWERSYNC_ENDPOINT, options.endpoint) ??
+    options.endpoint
+  const normalizedEndpoint = normalizeBaseUrl(endpoint)
+  const org = randomSlug('ci-org')
+  const repo = randomSlug('git-e2e')
+  return `powersync::${normalizedEndpoint}/orgs/${org}/repos/${repo}`
+}
+
 describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
   let helperDir: string
   let repoDir: string
@@ -138,14 +177,12 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
   beforeAll(async () => {
     stackEnv = await startStack({ skipDemoSeed: true })
     powersyncEndpoint = process.env.POWERSYNC_DAEMON_URL ?? 'http://127.0.0.1:5030'
-    const remoteUrl =
-      process.env.PSGIT_TEST_REMOTE_URL ??
-      stackEnv?.PSGIT_TEST_REMOTE_URL ??
-      `powersync::${powersyncEndpoint}/orgs/demo/repos/infra`
-    const parsed = parsePowerSyncUrl(remoteUrl)
+    const resolvedRemote = resolveTestRemoteUrl({ endpoint: powersyncEndpoint, stackEnv })
+    process.env.PSGIT_TEST_REMOTE_URL = resolvedRemote
+    const parsed = parsePowerSyncUrl(resolvedRemote)
     org = parsed.org
     repo = parsed.repo
-    powersyncRemoteUrl = `powersync::${powersyncEndpoint}/orgs/${org}/repos/${repo}`
+    powersyncRemoteUrl = `powersync::${powersyncEndpoint.replace(/\/+$/, '')}/orgs/${org}/repos/${repo}`
 
     helperDir = await mkdtemp(join(tmpdir(), 'powersync-helper-'))
     await createHelperExecutable(helperDir)
