@@ -67,6 +67,12 @@ async function subscribeToStreams(ps: PowerSyncDatabase, targets: readonly Strea
   let lastError: unknown = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await ps.waitForReady().catch(() => undefined)
+    try {
+      await ps.execute('SELECT powersync_disable_drop_view()')
+    } catch (guardError) {
+      console.error('[PowerSync][streams] drop-view guard unavailable before subscribing', guardError)
+      throw guardError
+    }
     const subscriptions: SyncStreamSubscription[] = []
     try {
       for (const target of targets) {

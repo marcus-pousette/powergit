@@ -1,24 +1,3 @@
--- PowerSync Git metadata tables managed by Supabase migrations.
--- Dev-only: we drop and recreate the raw tables each run so relic views/tables never collide.
-
-do $$
-declare relkind char;
-begin
-  select c.relkind
-    into relkind
-  from pg_catalog.pg_class c
-  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public' and c.relname = 'refs'
-  limit 1;
-
-  if relkind = 'v' or relkind = 'm' then
-    execute 'drop view if exists public.refs cascade';
-  elsif relkind = 'r' or relkind = 'p' then
-    execute 'drop table if exists public.refs cascade';
-  end if;
-end
-$$;
-
 create table if not exists public.refs (
   id text primary key,
   org_id text not null,
@@ -27,24 +6,6 @@ create table if not exists public.refs (
   target_sha text not null,
   updated_at timestamptz not null default now()
 );
-
-do $$
-declare relkind char;
-begin
-  select c.relkind
-    into relkind
-  from pg_catalog.pg_class c
-  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public' and c.relname = 'commits'
-  limit 1;
-
-  if relkind = 'v' or relkind = 'm' then
-    execute 'drop view if exists public.commits cascade';
-  elsif relkind = 'r' or relkind = 'p' then
-    execute 'drop table if exists public.commits cascade';
-  end if;
-end
-$$;
 
 create table if not exists public.commits (
   id text primary key,
@@ -58,24 +19,6 @@ create table if not exists public.commits (
   tree_sha text not null
 );
 
-do $$
-declare relkind char;
-begin
-  select c.relkind
-    into relkind
-  from pg_catalog.pg_class c
-  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public' and c.relname = 'file_changes'
-  limit 1;
-
-  if relkind = 'v' or relkind = 'm' then
-    execute 'drop view if exists public.file_changes cascade';
-  elsif relkind = 'r' or relkind = 'p' then
-    execute 'drop table if exists public.file_changes cascade';
-  end if;
-end
-$$;
-
 create table if not exists public.file_changes (
   id text primary key,
   org_id text not null,
@@ -85,24 +28,6 @@ create table if not exists public.file_changes (
   additions integer not null,
   deletions integer not null
 );
-
-do $$
-declare relkind char;
-begin
-  select c.relkind
-    into relkind
-  from pg_catalog.pg_class c
-  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public' and c.relname = 'objects'
-  limit 1;
-
-  if relkind = 'v' or relkind = 'm' then
-    execute 'drop view if exists public.objects cascade';
-  elsif relkind = 'r' or relkind = 'p' then
-    execute 'drop table if exists public.objects cascade';
-  end if;
-end
-$$;
 
 create table if not exists public.objects (
   id text primary key,

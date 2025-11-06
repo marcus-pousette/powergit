@@ -7,6 +7,7 @@ import type { Page } from '@playwright/test'
 import { test, expect } from './diagnostics'
 import { BASE_URL } from '../../playwright.config'
 import { loadProfileEnvironment } from '../../../../cli/src/profile-env.js'
+import { ensureDaemonSupabaseAuth } from '../../../../../scripts/dev-shared.mjs'
 
 const WAIT_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_WAIT_MS ?? '300000', 10)
 const WAIT_INTERVAL_MS = Number.parseInt(process.env.POWERSYNC_E2E_POLL_MS ?? '1500', 10)
@@ -214,7 +215,14 @@ test.describe('Explorer GitHub import (live PowerSync)', () => {
     supabasePassword = requireEnv('POWERSYNC_SUPABASE_PASSWORD')
     daemonBaseUrl = normalizeBaseUrl(requireEnv('POWERSYNC_DAEMON_URL'))
 
-    runCliCommand(['login', '--guest'], 'authenticate daemon (guest)')
+    const authResult = await ensureDaemonSupabaseAuth({
+      env: process.env,
+      metadata: { initiatedBy: 'playwright-e2e:github-import' },
+      logger: console,
+    })
+    if (!authResult.status || authResult.status.status !== 'ready') {
+      throw new Error('Failed to authenticate daemon via Supabase for Playwright tests.')
+    }
     await waitForDaemonReady(daemonBaseUrl, WAIT_TIMEOUT_MS)
   })
 

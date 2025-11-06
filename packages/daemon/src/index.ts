@@ -375,6 +375,16 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   let connected = false;
   let connectedAt: Date | null = null;
 
+  const pendingConnectReasons: string[] = [];
+  let connectHandler: ((reason: string) => void) | null = null;
+  const requestConnect = (reason: string) => {
+    if (connectHandler) {
+      connectHandler(reason);
+    } else {
+      pendingConnectReasons.push(reason);
+    }
+  };
+
   const handleSupabaseSignOut = async (reason: string) => {
     supabaseSession = null;
     authToken = null;
@@ -412,7 +422,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     if (authToken && !isJwtExpired(authToken, 5_000)) {
       supabaseWriter?.start();
     }
-    scheduleConnect(`supabase-${source}`);
+    requestConnect(`supabase-${source}`);
   };
 
   const initialSessionResult = await supabase.auth.getSession();
@@ -568,6 +578,12 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     });
     task.catch(() => undefined);
   };
+  connectHandler = scheduleConnect;
+  if (pendingConnectReasons.length > 0) {
+    for (const reason of pendingConnectReasons.splice(0)) {
+      connectHandler(reason);
+    }
+  }
 
   const waitForConnection = async (timeoutMs: number): Promise<boolean> => {
     if (connected) {
@@ -861,7 +877,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   const listenHost = address.family === 'IPv6' ? `[${address.address}]` : address.address;
   console.info(`[powersync-daemon] listening on http://${listenHost}:${address.port}`);
 
-  scheduleConnect('initial-start');
+  requestConnect('initial-start');
 
   process.once('SIGINT', () => requestShutdown('SIGINT'));
   process.once('SIGTERM', () => requestShutdown('SIGTERM'));

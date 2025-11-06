@@ -8,6 +8,7 @@ import { test, expect } from './diagnostics'
 import { BASE_URL } from '../../playwright.config'
 import { parsePowerSyncUrl } from '@shared/core'
 import { loadProfileEnvironment } from '../../../../cli/src/profile-env.js'
+import { ensureDaemonSupabaseAuth } from '../../../../../scripts/dev-shared.mjs'
 
 const WAIT_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_E2E_WAIT_MS ?? '300000', 10)
 const WAIT_INTERVAL_MS = Number.parseInt(process.env.POWERSYNC_E2E_POLL_MS ?? '1500', 10)
@@ -264,7 +265,14 @@ test.describe('CLI-seeded repo (live PowerSync)', () => {
     orgId = parsed.org
     repoId = parsed.repo
 
-    runCliCommand(['login', '--guest'], 'authenticate daemon (guest)')
+    const authResult = await ensureDaemonSupabaseAuth({
+      env: process.env,
+      metadata: { initiatedBy: 'playwright-e2e:cli-seed' },
+      logger: console,
+    })
+    if (!authResult.status || authResult.status.status !== 'ready') {
+      throw new Error('Failed to authenticate daemon via Supabase for Playwright tests.')
+    }
     await waitForDaemonReady(daemonBaseUrl, WAIT_TIMEOUT_MS)
 
     runCliCommand(['demo-seed'], 'seed demo repository')

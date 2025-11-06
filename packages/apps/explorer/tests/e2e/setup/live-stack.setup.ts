@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import net from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +23,54 @@ if (!STOP_COMMAND[0]) {
 const TCP_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_STACK_PROBE_TIMEOUT_MS ?? '1000', 10)
 const TCP_RETRY_DELAY_MS = Number.parseInt(process.env.POWERSYNC_STACK_RETRY_DELAY_MS ?? '1000', 10)
 const STACK_START_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_STACK_START_TIMEOUT_MS ?? '120000', 10)
+const DAEMON_WAIT_TIMEOUT_MS = Number.parseInt(process.env.POWERSYNC_DAEMON_READY_TIMEOUT_MS ?? '20000', 10)
+
+function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (trimmed.length > 0) return trimmed
+  }
+  return null
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '')
+}
+
+function randomSlug(prefix: string): string {
+  const timestamp = Date.now().toString(36)
+  const random = Math.random().toString(36).slice(2, 8)
+  return `${prefix}-${timestamp}-${random}`.replace(/[^a-z0-9-]/gi, '').toLowerCase()
+}
+
+function ensureLiveRemoteUrl(): void {
+  const existing = firstNonEmpty(
+    process.env.PSGIT_TEST_REMOTE_URL,
+    process.env.POWERSYNC_SEED_REMOTE_URL,
+    process.env.POWERSYNC_TEST_REMOTE_URL,
+  )
+  if (existing) {
+    process.env.PSGIT_TEST_REMOTE_URL = existing
+    return
+  }
+
+  const endpoint =
+    firstNonEmpty(
+      process.env.POWERSYNC_ENDPOINT,
+      process.env.POWERSYNC_DAEMON_ENDPOINT,
+      process.env.POWERSYNC_DAEMON_URL,
+    ) ?? 'http://127.0.0.1:5030'
+  const normalized = normalizeBaseUrl(endpoint)
+  const org = randomSlug('ps-e2e-org')
+  const repo = randomSlug('ps-e2e-repo')
+  const remoteUrl = `powersync::${normalized}/orgs/${org}/repos/${repo}`
+  process.env.PSGIT_TEST_REMOTE_URL = remoteUrl
+  if (!process.env.POWERSYNC_SEED_REMOTE_URL) {
+    process.env.POWERSYNC_SEED_REMOTE_URL = remoteUrl
+  }
+  console.info(`[live-setup] Using PowerSync test remote ${remoteUrl}`)
+}
 
 async function delay(ms: number) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
@@ -59,6 +107,80 @@ async function waitForStackReady(timeoutMs: number): Promise<void> {
     await delay(TCP_RETRY_DELAY_MS)
   }
   throw new Error(`PowerSync dev stack did not become ready within ${timeoutMs}ms (host ${STACK_HOST}, port ${STACK_PORT})`)
+}
+
+async function waitForDaemonReady(timeoutMs: number): Promise<void> {
+  const daemonUrl = getDaemonBaseUrl()
+  const normalized = daemonUrl.replace(/\/+$/, '')
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${normalized}/health`)
+      if (response.ok) {
+        return
+      }
+    } catch {
+      // ignore and retry
+    }
+    await delay(TCP_RETRY_DELAY_MS)
+  }
+  throw new Error(`PowerSync daemon did not become ready within ${timeoutMs}ms (url ${daemonUrl})`)
+}
+
+function getDaemonBaseUrl(): string {
+  return (
+    process.env.POWERSYNC_DAEMON_URL ??
+    process.env.POWERSYNC_DAEMON_ENDPOINT ??
+    'http://127.0.0.1:5030'
+  )
+}
+
+async function isDaemonResponsive(): Promise<boolean> {
+  try {
+    const response = await fetch(`${normalizeBaseUrl(getDaemonBaseUrl())}/health`)
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+let daemonProcess: ReturnType<typeof spawn> | null = null
+let daemonStartedBySuite = false
+
+async function ensureDaemonProcessRunning(): Promise<void> {
+  if (await isDaemonResponsive()) {
+    return
+  }
+  const profile = process.env.STACK_PROFILE ?? 'local-dev'
+  const script = resolve(repoRoot, 'scripts', 'start-daemon-with-profile.mjs')
+  daemonProcess = spawn(process.execPath, [script, '--profile', profile], {
+    cwd: repoRoot,
+    env: { ...process.env },
+    stdio: 'ignore',
+    detached: true,
+  })
+  daemonProcess.unref()
+  daemonStartedBySuite = true
+  await waitForDaemonReady(DAEMON_WAIT_TIMEOUT_MS)
+}
+
+async function stopDaemonProcess(): Promise<void> {
+  if (!(await isDaemonResponsive())) {
+    return
+  }
+  try {
+    await fetch(`${normalizeBaseUrl(getDaemonBaseUrl())}/shutdown`, { method: 'POST' })
+  } catch {
+    // ignore shutdown errors
+  }
+  if (daemonProcess) {
+    try {
+      process.kill(-daemonProcess.pid!, 'SIGTERM')
+    } catch {
+      // ignore
+    }
+    daemonProcess = null
+  }
 }
 
 function runCommand(command: string, args: string[], label: string): void {
@@ -102,7 +224,8 @@ function applyProfileEnvironment(): void {
     strict: Boolean(profileOverride),
   })
   for (const [key, value] of Object.entries(profileResult.combinedEnv)) {
-    if (!(key in process.env)) {
+    const current = process.env[key]
+    if (current === undefined || current.trim().length === 0) {
       process.env[key] = value
     }
   }
@@ -123,21 +246,25 @@ test.describe('PowerSync dev stack (live)', () => {
 
   test('ensure stack is running', async () => {
     applyProfileEnvironment()
+    ensureLiveRemoteUrl()
+
+    if (shouldManageLocalStack()) {
+      if (!(await isStackRunning())) {
+        runCommand(START_COMMAND[0]!, START_COMMAND.slice(1), 'start dev stack')
+        await waitForStackReady(STACK_START_TIMEOUT_MS)
+        startedBySuite = true
+      }
+      await ensureDaemonProcessRunning()
+    }
+
     await loginDaemonIfNeeded()
-
-    if (!shouldManageLocalStack()) {
-      return
-    }
-
-    if (!(await isStackRunning())) {
-      runCommand(START_COMMAND[0]!, START_COMMAND.slice(1), 'start dev stack')
-      await waitForStackReady(STACK_START_TIMEOUT_MS)
-      startedBySuite = true
-    }
   })
 
   test.afterAll(async () => {
     if (!startedBySuite) return
     runCommand(STOP_COMMAND[0]!, STOP_COMMAND.slice(1), 'stop dev stack')
+    if (daemonStartedBySuite) {
+      await stopDaemonProcess()
+    }
   })
 })

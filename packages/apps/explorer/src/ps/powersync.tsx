@@ -116,6 +116,13 @@ async function performRawTableMigration(database: PowerSyncDatabase): Promise<vo
     console.debug('[PowerSync] ensuring raw tables (browser)')
   }
   await database.writeTransaction(async (tx) => {
+    try {
+      await tx.execute('SELECT powersync_disable_drop_view()')
+    } catch (error) {
+      console.error('[PowerSync] raw table migration: required disable hook missing', error)
+      throw error
+    }
+
     const untypedCheck = await tx.execute(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ps_untyped' LIMIT 1",
     )
@@ -563,6 +570,12 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
         }
         await waitForPendingPowerSyncClose()
         await powerSync.init()
+        try {
+          await powerSync.execute('SELECT powersync_disable_drop_view()')
+        } catch (guardError) {
+          console.error('[PowerSync] required drop-view guard unavailable before connect', guardError)
+          throw guardError
+        }
         await powerSync.connect(connector, { clientImplementation: SyncClientImplementation.RUST })
         if (import.meta.env.DEV) {
           const options = powerSync.connectionOptions
@@ -595,6 +608,12 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
               disconnectAndClear?: (options: { clearLocal?: boolean }) => Promise<void>
             }).disconnectAndClear
             if (typeof disconnectAndClear === 'function') {
+            try {
+              await powerSync.execute('SELECT powersync_disable_drop_view()')
+            } catch (disableBeforeClearError) {
+              console.error('[PowerSync] disable drop view hook unavailable before clearing local database', disableBeforeClearError)
+              throw disableBeforeClearError
+            }
               try {
                 await disconnectAndClear.call(powerSync, { clearLocal: true })
               } catch (clearError) {
@@ -611,6 +630,12 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
               await runRawTableMigration()
             } catch (migrationError) {
               console.error('[PowerSync] raw table migration failed during schema recovery', migrationError)
+            }
+            try {
+              await powerSync.execute('SELECT powersync_disable_drop_view()')
+            } catch (disableError) {
+              console.error('[PowerSync] disable drop view hook unavailable after schema recovery', disableError)
+              throw disableError
             }
             if (!disposed) {
               await connect(attempt + 1)
