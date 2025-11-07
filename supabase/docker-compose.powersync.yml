@@ -2,7 +2,7 @@
 
 services:
   powersync:
-    image: ${POWERSYNC_IMAGE:-powersync-service:dev}
+    image: ${POWERSYNC_IMAGE:-journeyapps/powersync-service:latest}
     container_name: powersync-local
     restart: unless-stopped
     environment:
