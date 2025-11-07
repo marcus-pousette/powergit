@@ -3,13 +3,27 @@ import * as React from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useLiveQuery } from '@tanstack/react-db'
 import { useCollections } from '@tsdb/collections'
-import { GithubImportCard } from '../components/GithubImportCard'
+import { GithubImportCard, REPO_IMPORT_EVENT } from '../components/GithubImportCard'
 import type { Database } from '@ps/schema'
 import { useTheme } from '../ui/theme-context'
 
 export const Route = createFileRoute('/' as any)({
   component: Home,
 })
+
+type RepoSummary = {
+  orgId: string
+  repoId: string
+  branches: Set<string>
+  updatedAt: string | null
+}
+
+type ImportEventDetail = {
+  orgId: string
+  repoId: string
+  branch?: string | null
+  timestamp?: string
+}
 
 export function Home() {
   const { theme } = useTheme()
@@ -31,12 +45,7 @@ export function Home() {
   const repoSummaries = React.useMemo(() => {
     const map = new Map<
       string,
-      {
-        orgId: string
-        repoId: string
-        branches: Set<string>
-        updatedAt: string | null
-      }
+      RepoSummary
     >()
 
     for (const row of refRows) {
@@ -57,6 +66,59 @@ export function Home() {
       map.set(key, entry)
     }
 
+    return Array.from(map.values())
+  }, [refRows])
+
+  const [pendingImports, setPendingImports] = React.useState<Record<string, RepoSummary>>({})
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<ImportEventDetail>).detail
+      if (!detail?.orgId || !detail?.repoId) return
+      setPendingImports((prev) => {
+        const key = `${detail.orgId}/${detail.repoId}`
+        if (prev[key]) return prev
+        const next = { ...prev }
+        next[key] = {
+          orgId: detail.orgId,
+          repoId: detail.repoId,
+          branches: new Set(detail.branch ? [detail.branch] : []),
+          updatedAt: detail.timestamp ?? new Date().toISOString(),
+        }
+        return next
+      })
+    }
+    window.addEventListener(REPO_IMPORT_EVENT, handler as EventListener)
+    return () => window.removeEventListener(REPO_IMPORT_EVENT, handler as EventListener)
+  }, [])
+
+  React.useEffect(() => {
+    if (repoSummaries.length === 0) return
+    setPendingImports((prev) => {
+      const next = { ...prev }
+      let dirty = false
+      for (const summary of repoSummaries) {
+        const key = `${summary.orgId}/${summary.repoId}`
+        if (next[key]) {
+          delete next[key]
+          dirty = true
+        }
+      }
+      return dirty ? next : prev
+    })
+  }, [repoSummaries])
+
+  const combinedSummaries = React.useMemo(() => {
+    const map = new Map<string, RepoSummary>()
+    for (const summary of repoSummaries) {
+      map.set(`${summary.orgId}/${summary.repoId}`, summary)
+    }
+    for (const [key, pending] of Object.entries(pendingImports)) {
+      if (!map.has(key)) {
+        map.set(key, pending)
+      }
+    }
     return Array.from(map.values()).sort((a, b) => {
       const aTime = a.updatedAt ? Date.parse(a.updatedAt) : 0
       const bTime = b.updatedAt ? Date.parse(b.updatedAt) : 0
@@ -65,7 +127,7 @@ export function Home() {
       }
       return bTime - aTime
     })
-  }, [refRows])
+  }, [pendingImports, repoSummaries])
 
   const formatTimestamp = React.useCallback((iso: string | null | undefined) => {
     if (!iso) return '–'
@@ -99,11 +161,11 @@ export function Home() {
             </h2>
           </div>
           <span className={repoBadge}>
-            {repoSummaries.length} repo{repoSummaries.length === 1 ? '' : 's'}
+            {combinedSummaries.length} repo{combinedSummaries.length === 1 ? '' : 's'}
           </span>
         </header>
 
-        {repoSummaries.length === 0 ? (
+        {combinedSummaries.length === 0 ? (
           <div
             className={`rounded-2xl border border-dashed px-6 py-8 text-center text-sm ${
               isDark ? 'border-slate-700 text-slate-400 bg-slate-900/60' : 'border-slate-200 text-slate-500 bg-white/80'
@@ -115,7 +177,7 @@ export function Home() {
           </div>
         ) : (
           <ul className="space-y-3">
-            {repoSummaries.map((repo) => {
+            {combinedSummaries.map((repo) => {
               const branchCount = Array.from(repo.branches).filter((name) => name && name !== 'HEAD').length
               const repoKey = `${repo.orgId}/${repo.repoId}`
               return (

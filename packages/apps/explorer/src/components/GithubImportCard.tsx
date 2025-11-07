@@ -9,6 +9,8 @@ import {
 } from '@ps/daemon-client'
 import { useTheme } from '../ui/theme-context'
 
+export const REPO_IMPORT_EVENT = '__powergit:repo-imported'
+
 const POLL_INTERVAL_MS = 1_500
 
 type ImportPhase = 'idle' | 'submitting' | 'queued' | 'running' | 'success' | 'error'
@@ -19,6 +21,7 @@ export function GithubImportCard(): React.JSX.Element | null {
   const [status, setStatus] = React.useState<ImportPhase>('idle')
   const [error, setError] = React.useState<string | null>(null)
   const [job, setJob] = React.useState<PowerSyncImportJob | null>(null)
+  const lastAnnouncedJob = React.useRef<string | null>(null)
   const { theme } = useTheme()
   const isDark = theme === 'dark'
 
@@ -72,6 +75,28 @@ export function GithubImportCard(): React.JSX.Element | null {
   const showSummary = Boolean(job && derived)
   const resultOrgId = job?.result?.orgId ?? job?.orgId ?? derived?.orgId ?? null
   const resultRepoId = job?.result?.repoId ?? job?.repoId ?? derived?.repoId ?? null
+  const resultDefaultBranch = job?.result?.defaultBranch ?? job?.result?.branch ?? job?.branch ?? null
+
+  React.useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !job ||
+      job.status !== 'success' ||
+      !resultOrgId ||
+      !resultRepoId ||
+      lastAnnouncedJob.current === job.id
+    ) {
+      return
+    }
+    lastAnnouncedJob.current = job.id
+    const detail = {
+      orgId: resultOrgId,
+      repoId: resultRepoId,
+      branch: resultDefaultBranch,
+      timestamp: new Date().toISOString(),
+    }
+    window.dispatchEvent(new CustomEvent(REPO_IMPORT_EVENT, { detail }))
+  }, [job, resultDefaultBranch, resultOrgId, resultRepoId])
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -111,7 +136,7 @@ export function GithubImportCard(): React.JSX.Element | null {
       case 'queued':
         return 'Import queued — waiting for the daemon to start cloning.'
       case 'running':
-        return 'Cloning repository and streaming into PowerSync…'
+        return 'Cloning repository...'
       case 'success':
         return 'Repository imported successfully.'
       case 'error':
