@@ -121,6 +121,7 @@ function Commits() {
   const [toDate, setToDate] = React.useState<string>('')
   const [expandedCommit, setExpandedCommit] = React.useState<string | null>(null)
   const [diffStates, setDiffStates] = React.useState<Record<string, CommitDiffState>>({})
+  const [filterResetKey, setFilterResetKey] = React.useState(0)
 
   React.useEffect(() => {
     if (branchFilter === 'all') return
@@ -150,6 +151,8 @@ function Commits() {
     setFromDate('')
     setToDate('')
     setExpandedCommit(null)
+    setDiffStates({})
+    setFilterResetKey((prev) => prev + 1)
   }, [])
 
   const filteredCommits = React.useMemo(() => {
@@ -416,6 +419,7 @@ function Commits() {
           <label className={controlGroupClass}>
             <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>Branch</span>
             <select
+              key={`branch-${filterResetKey}`}
               className={selectClass}
               value={branchFilter}
               onChange={(event) => setBranchFilter(event.target.value)}
@@ -433,6 +437,7 @@ function Commits() {
           <label className={controlGroupClass}>
             <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>Author</span>
             <select
+              key={`author-${filterResetKey}`}
               className={selectClass}
               value={authorFilter}
               onChange={(event) => setAuthorFilter(event.target.value)}
@@ -450,6 +455,7 @@ function Commits() {
           <label className={controlGroupClass}>
             <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>From</span>
             <input
+              key={`from-${filterResetKey}`}
               type="date"
               className={dateInputClass}
               value={fromDate}
@@ -461,6 +467,7 @@ function Commits() {
           <label className={controlGroupClass}>
             <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>To</span>
             <input
+              key={`to-${filterResetKey}`}
               type="date"
               className={dateInputClass}
               value={toDate}
