@@ -61,6 +61,8 @@ export interface DaemonServerOptions {
   getRepoSummary?: (params: { orgId: string; repoId: string }) => Promise<{ orgId: string; repoId: string; counts: Record<string, number> }>;
   fetchPack?: (params: { orgId: string; repoId: string; wants?: string[] }) => Promise<DaemonPackResponse | null>;
   pushPack?: (params: { orgId: string; repoId: string; payload: DaemonPushRequest }) => Promise<DaemonPushResponse>;
+  deleteRepo?: (params: { orgId: string; repoId: string }) => Promise<{ ok: boolean; deletedPacks?: number } | void>;
+  getPackDownloadUrl?: (params: { orgId: string; repoId: string; packOid: string }) => Promise<{ url: string; expiresAt?: string | null; sizeBytes?: number | null } | null>;
   getAuthStatus?: () => DaemonAuthResponse | Promise<DaemonAuthResponse>;
   handleAuthDevice?: (payload: Record<string, unknown>) => Promise<DaemonAuthResponse>;
   handleAuthLogout?: (payload: Record<string, unknown> | null) => Promise<DaemonAuthResponse>;
@@ -106,8 +108,10 @@ async function readJsonBody<T = unknown>(req: http.IncomingMessage): Promise<T |
 }
 
 export interface DaemonPackResponse {
-  packBase64: string;
+  packBase64?: string;
   encoding?: string;
+  packUrl?: string;
+  packHeaders?: Record<string, string>;
   packOid?: string | null;
   createdAt?: string | null;
   size?: number;
@@ -127,6 +131,16 @@ export type DaemonPushResponse = PersistPushResult & { message?: string };
 function allowedMethodsForPath(pathname: string, options: DaemonServerOptions): string[] | null {
   if (/^\/repos\/import\/[^/]+$/.test(pathname)) {
     return options.getImportJob ? ['GET'] : null;
+  }
+
+  if (/^\/orgs\/[^/]+\/repos\/[^/]+$/.test(pathname)) {
+    const methods: string[] = [];
+    if (options.deleteRepo) methods.push('DELETE');
+    return methods.length > 0 ? methods : null;
+  }
+
+  if (/^\/orgs\/[^/]+\/repos\/[^/]+\/packs\/[^/]+$/.test(pathname)) {
+    return options.getPackDownloadUrl ? ['GET'] : null;
   }
 
   switch (pathname) {
@@ -505,6 +519,26 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
         }
       }
 
+      if (req.method === 'DELETE' && options.deleteRepo) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+          try {
+            const payload = await options.deleteRepo({ orgId, repoId });
+            applyCorsHeaders(res, originHeader);
+            sendJson(res, 200, payload ?? { ok: true });
+          } catch (error) {
+            console.error('[powersync-daemon] failed to delete repo data', error);
+            res.statusCode = 500;
+            applyCorsHeaders(res, originHeader);
+            res.end();
+          }
+          return;
+        }
+      }
+
       if (req.method === 'POST' && options.fetchPack) {
         const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/git\/fetch$/.exec(url.pathname);
         if (match) {
@@ -523,10 +557,20 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
               res.end();
               return;
             }
-            const response: Record<string, unknown> = {
-              pack: payload.packBase64,
-              packEncoding: payload.encoding ?? 'base64',
-            };
+            const response: Record<string, unknown> = {};
+            if (payload.packUrl) {
+              response.packUrl = payload.packUrl;
+              if (payload.packHeaders) {
+                response.packHeaders = payload.packHeaders;
+              }
+            } else if (payload.packBase64) {
+              response.pack = payload.packBase64;
+              response.packEncoding = payload.encoding ?? 'base64';
+            } else {
+              res.statusCode = 204;
+              res.end();
+              return;
+            }
             if (payload.packOid) {
               response.keep = payload.packOid;
             }
@@ -540,6 +584,31 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
             sendJson(res, 200, response);
           } catch (error) {
             console.error('[powersync-daemon] failed to serve pack', error);
+            res.statusCode = 500;
+            res.end();
+          }
+          return;
+        }
+      }
+
+      if (req.method === 'GET' && options.getPackDownloadUrl) {
+        const match = /^\/orgs\/([^/]+)\/repos\/([^/]+)\/packs\/([^/]+)$/.exec(url.pathname);
+        if (match) {
+          const [, rawOrg, rawRepo, rawPack] = match;
+          const orgId = decodeURIComponent(rawOrg);
+          const repoId = decodeURIComponent(rawRepo);
+          const packOid = decodeURIComponent(rawPack);
+          try {
+            const payload = await options.getPackDownloadUrl({ orgId, repoId, packOid });
+            if (!payload || !payload.url) {
+              res.statusCode = 404;
+              res.end();
+              return;
+            }
+            applyCorsHeaders(res, originHeader);
+            sendJson(res, 200, payload);
+          } catch (error) {
+            console.error('[powersync-daemon] failed to generate pack download url', error);
             res.statusCode = 500;
             res.end();
           }

@@ -56,7 +56,8 @@ const rawPowerSyncSchemaSpec = {
       org_id: 'text',
       repo_id: 'text',
       pack_oid: 'text',
-      pack_bytes: 'text',
+      storage_key: 'text',
+      size_bytes: 'integer',
       created_at: 'text',
     },
     indexes: {

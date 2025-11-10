@@ -49,7 +49,7 @@ function getSupabaseAdminClient(): SupabaseClient {
 async function resetRepoTables(orgId: string, repoId: string) {
   const supabase = getSupabaseAdminClient()
 
-  const tables = ['file_changes', 'commits', 'refs']
+  const tables = ['file_changes', 'commits', 'refs', 'objects']
   for (const table of tables) {
     const { error } = await supabase.from(table).delete().eq('org_id', orgId).eq('repo_id', repoId)
     if (error) {

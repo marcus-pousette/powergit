@@ -8,6 +8,7 @@ import { PowerSyncProvider } from './ps/powersync'
 import { SupabaseAuthProvider } from './ps/auth-context'
 import { NoticeProvider } from './ui/notices'
 import { StatusProvider } from './ui/status-provider'
+import './ps/git-store-config'
 
 const router = createRouter({ routeTree })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

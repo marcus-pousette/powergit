@@ -176,6 +176,8 @@ test.describe('Explorer repo lists', () => {
           org_id: orgId,
           repo_id: repoId,
           pack_oid: `pack-${suffix}`,
+          storage_key: `${orgId}/${repoId}/pack-${suffix}.pack`,
+          size_bytes: 1,
           pack_bytes: 'Zg==',
           created_at: now,
         })
@@ -334,6 +336,8 @@ test.describe('Explorer repo lists', () => {
             org_id: orgId,
             repo_id: repoId,
             pack_oid: 'pack-binary',
+            storage_key: `${orgId}/${repoId}/pack-binary.pack`,
+            size_bytes: 1,
             pack_bytes: 'Zg==',
             created_at: new Date().toISOString(),
           },

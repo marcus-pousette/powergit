@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { PowerSyncDatabase } from '@powersync/node';
 import type {
   GitCommitSummary,
@@ -33,9 +32,17 @@ export interface LatestPackOptions {
 
 export async function getLatestPack(database: PowerSyncDatabase, options: LatestPackOptions): Promise<PackRow | null> {
   const { orgId, repoId } = options;
-  const sql = `SELECT org_id, repo_id, pack_oid, pack_bytes, created_at FROM objects WHERE org_id = ? AND repo_id = ? ORDER BY COALESCE(created_at, '') DESC, pack_oid DESC LIMIT 1`;
+  const sql = `SELECT org_id, repo_id, pack_oid, storage_key, size_bytes, created_at FROM objects WHERE org_id = ? AND repo_id = ? ORDER BY COALESCE(created_at, '') DESC, pack_oid DESC LIMIT 1`;
   const row = await database.getOptional<PackRow>(sql, [orgId, repoId]);
   return row;
+}
+
+export async function getPackByOid(
+  database: PowerSyncDatabase,
+  options: { orgId: string; repoId: string; packOid: string },
+): Promise<PackRow | null> {
+  const sql = `SELECT org_id, repo_id, pack_oid, storage_key, size_bytes, created_at FROM objects WHERE org_id = ? AND repo_id = ? AND pack_oid = ? LIMIT 1`;
+  return database.getOptional<PackRow>(sql, [options.orgId, options.repoId, options.packOid]);
 }
 
 export interface ListReposOptions {
@@ -83,9 +90,9 @@ export interface PersistPushOptions {
   orgId: string;
   repoId: string;
   updates: PushUpdateRow[];
-  packBase64?: string;
-  packEncoding?: string;
   packOid?: string;
+  packStorageKey?: string;
+  packSizeBytes?: number;
   summary?: GitPushSummary | null;
   createdAt?: string;
   dryRun?: boolean;
@@ -96,6 +103,15 @@ export interface PersistPushResult {
   results: Record<string, { status: 'ok' | 'error'; message?: string }>;
   packOid?: string;
   packSize?: number;
+}
+
+export interface DeleteRepoOptions {
+  orgId: string;
+  repoId: string;
+}
+
+export interface DeleteRepoResult {
+  storageKeys: string[];
 }
 
 function refId(orgId: string, repoId: string, name: string): string {
@@ -133,30 +149,24 @@ export async function persistPush(database: PowerSyncDatabase, options: PersistP
   let resolvedPackOid = sanitizeOid(options.packOid);
   let packSize: number | undefined;
   const createdAt = options.createdAt ?? new Date().toISOString();
-  const packBase64 = options.packBase64 && options.packBase64.length > 0 ? options.packBase64 : undefined;
-
-  if (packBase64) {
-    const encoding = (options.packEncoding ?? 'base64').toLowerCase();
-    if (encoding !== 'base64') {
-      throw new Error(`Unsupported pack encoding: ${encoding}`);
-    }
-    const packBuffer = Buffer.from(packBase64, 'base64');
-    packSize = packBuffer.length;
+  const storageKey = typeof options.packStorageKey === 'string' ? options.packStorageKey.trim() : '';
+  if (storageKey) {
+    packSize = options.packSizeBytes;
     if (!resolvedPackOid) {
-      resolvedPackOid = createHash('sha1').update(packBuffer).digest('hex');
+      throw new Error('Persisted packs require a packOid when storage_key is provided');
     }
   }
 
   const summary = sanitizePushSummary(options.summary);
 
   await database.writeTransaction(async (tx: WriteContext) => {
-    if (packBase64 && resolvedPackOid) {
+    if (storageKey && resolvedPackOid) {
       const id = packId(orgId, repoId, resolvedPackOid);
       await tx.execute('DELETE FROM objects WHERE id = ?', [id]);
       await tx.execute(
-        `INSERT INTO objects (id, org_id, repo_id, pack_oid, pack_bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [id, orgId, repoId, resolvedPackOid, packBase64, createdAt],
+        `INSERT INTO objects (id, org_id, repo_id, pack_oid, storage_key, size_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, orgId, repoId, resolvedPackOid, storageKey, options.packSizeBytes ?? null, createdAt],
       );
     }
 
@@ -178,6 +188,29 @@ export async function persistPush(database: PowerSyncDatabase, options: PersistP
     packOid: resolvedPackOid,
     packSize,
   };
+}
+
+export async function deleteRepoData(
+  database: PowerSyncDatabase,
+  options: DeleteRepoOptions,
+): Promise<DeleteRepoResult> {
+  const { orgId, repoId } = options;
+  const storageRows = await database.getAll<{ storage_key: string | null }>(
+    'SELECT storage_key FROM objects WHERE org_id = ? AND repo_id = ?',
+    [orgId, repoId],
+  );
+  const storageKeys = storageRows
+    .map((row) => row.storage_key?.trim())
+    .filter((key): key is string => Boolean(key));
+
+  await database.writeTransaction(async (tx: WriteContext) => {
+    await tx.execute('DELETE FROM file_changes WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM refs WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM objects WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+  });
+
+  return { storageKeys };
 }
 
 function sanitizeOid(value?: string | null): string | undefined {

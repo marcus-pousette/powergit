@@ -100,7 +100,6 @@ describe('SupabaseWriter', () => {
   });
 
   it('upserts PowerSync mutations to Supabase with pack bytes normalized', async () => {
-    const base64Pack = Buffer.from('fake pack').toString('base64');
     const packEntry = createEntry({
       table: 'objects',
       op: UpdateType.PUT,
@@ -109,7 +108,8 @@ describe('SupabaseWriter', () => {
         org_id: 'demo',
         repo_id: 'infra',
         pack_oid: 'abcdef1234567890',
-        pack_bytes: base64Pack,
+        storage_key: 'demo/infra/abcdef1234567890.pack',
+        size_bytes: 42,
         created_at: '2024-01-01T00:00:00Z',
       },
     });
@@ -168,9 +168,10 @@ describe('SupabaseWriter', () => {
       org_id: 'demo',
       repo_id: 'infra',
       pack_oid: 'abcdef1234567890',
+      storage_key: 'demo/infra/abcdef1234567890.pack',
+      size_bytes: 42,
       created_at: '2024-01-01T00:00:00Z',
     });
-    expect(packRow.pack_bytes).toBe(base64Pack);
     expect(packCall?.options).toMatchObject({ onConflict: 'id' });
 
     const refUpsert = currentSupabaseStub.upsertCalls.find((call) => call.table === 'refs');

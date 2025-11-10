@@ -75,11 +75,14 @@ describe('GitObjectStore', () => {
   it('indexes packs emitted by isomorphic-git without LightningFS read errors', async () => {
     const { base64 } = await createSamplePackBase64()
     const store = new GitObjectStore()
+    const size = Buffer.from(base64, 'base64').length
     const packRow: PackRow = {
       id: 'sample-pack',
       org_id: 'test-org',
       repo_id: 'test-repo',
       pack_oid: 'sample-pack',
+      storage_key: 'test-org/test-repo/sample-pack.pack',
+      size_bytes: size,
       pack_bytes: base64,
       created_at: new Date().toISOString(),
     }
@@ -90,11 +93,14 @@ describe('GitObjectStore', () => {
   it('can re-index the same pack without throwing', async () => {
     const { base64 } = await createSamplePackBase64()
     const store = new GitObjectStore()
+    const size = Buffer.from(base64, 'base64').length
     const packRow: PackRow = {
       id: 'sample-pack',
       org_id: 'test-org',
       repo_id: 'test-repo',
       pack_oid: 'repeat-pack',
+      storage_key: 'test-org/test-repo/repeat-pack.pack',
+      size_bytes: size,
       pack_bytes: base64,
       created_at: new Date().toISOString(),
     }
@@ -106,11 +112,14 @@ describe('GitObjectStore', () => {
   it('re-indexes packs after LightningFS persistence without cached bytes', async () => {
     const { base64 } = await createSamplePackBase64()
     const firstStore = new GitObjectStore()
+    const size = Buffer.from(base64, 'base64').length
     const packRow: PackRow = {
       id: 'persisted-pack',
       org_id: 'test-org',
       repo_id: 'test-repo',
       pack_oid: 'persisted-pack',
+      storage_key: 'test-org/test-repo/persisted-pack.pack',
+      size_bytes: size,
       pack_bytes: base64,
       created_at: new Date().toISOString(),
     }

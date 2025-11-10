@@ -29,7 +29,7 @@ streams:
   orgs/{org_id}/repos/{repo_id}/objects:
     auto_subscribe: true
     query: |
-      SELECT id, org_id, repo_id, pack_oid, pack_bytes, created_at
+      SELECT id, org_id, repo_id, pack_oid, storage_key, size_bytes, created_at
       FROM objects
       WHERE org_id = subscription.parameter('org_id')
         AND repo_id = subscription.parameter('repo_id')

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -14,12 +14,13 @@ import {
   type SubscribeStreamsResult,
   type UnsubscribeStreamsResult,
 } from './server.js';
-import { getLatestPack, getRepoSummary, listRefs, listRepos, persistPush } from './queries.js';
+import { deleteRepoData, getLatestPack, getPackByOid, getRepoSummary, listRefs, listRepos, persistPush } from './queries.js';
 import type { PersistPushResult, PushUpdateRow } from './queries.js';
 import { SupabaseWriter } from './supabase-writer.js';
 import { GithubImportManager } from './importer.js';
 import { resolveSessionPath } from './auth/index.js';
 import { createSupabaseFileStorage, resolveSupabaseSessionPath } from '@shared/core';
+import { PackStorage } from './storage.js';
 
 function normalizeAuthToken(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -71,37 +72,10 @@ function formatJwtExpirationIso(token: string | null | undefined): string | null
   return Number.isNaN(Date.parse(iso)) ? null : iso;
 }
 
-function normalizePackBytes(raw: unknown): { base64: string; size: number } | null {
-  if (typeof raw !== 'string' || raw.length === 0) return null;
-  const trimmed = raw.trim();
-
-  if (trimmed.startsWith('\\x')) {
-    const hex = trimmed.slice(2);
-    if (/^[0-9a-fA-F]+$/.test(hex) && hex.length % 2 === 0) {
-      const buffer = Buffer.from(hex, 'hex');
-      if (buffer.length === 0) return null;
-      return { base64: buffer.toString('base64'), size: buffer.length };
-    }
-  }
-
-  if (isLikelyBase64(trimmed)) {
-    try {
-      const buffer = Buffer.from(trimmed, 'base64');
-      if (buffer.length === 0) return null;
-      return { base64: buffer.toString('base64'), size: buffer.length };
-    } catch {
-      // fall through to binary conversion
-    }
-  }
-
-  const fallbackBuffer = Buffer.from(trimmed, 'binary');
-  if (fallbackBuffer.length === 0) return null;
-  return { base64: fallbackBuffer.toString('base64'), size: fallbackBuffer.length };
-}
-
-function isLikelyBase64(value: string): boolean {
-  if (value.length === 0 || value.length % 4 !== 0) return false;
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+function sanitizeOid(value?: string | null): string | undefined {
+  if (!value || typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function buildPushErrorResults(updates: PushUpdateRow[], message: string) {
@@ -345,6 +319,21 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
           },
         }) as SupabaseClient)
       : (supabase as SupabaseClient);
+
+  const packBucket = (process.env.POWERSYNC_SUPABASE_STORAGE_BUCKET ?? 'git-packs').trim();
+  const packSignTtl = Number.parseInt(process.env.POWERSYNC_SUPABASE_STORAGE_TTL ?? '120', 10);
+  let packStorage: PackStorage | null = null;
+  try {
+    packStorage = new PackStorage(supabaseWriterClient, {
+      bucket: packBucket,
+      baseUrl: supabaseUrl,
+      signExpiresIn: Number.isFinite(packSignTtl) ? packSignTtl : 120,
+    });
+    await packStorage.ensureBucket();
+  } catch (error) {
+    packStorage = null;
+    console.error('[powersync-daemon] failed to initialize pack storage', error);
+  }
 
   let supabaseSession: Session | null = null;
   let supabaseAuthSubscription: { unsubscribe: () => void } | null = null;
@@ -786,6 +775,7 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     listRepos: ({ orgId, limit }) => listRepos(databaseInstance, { orgId, limit }),
     getRepoSummary: ({ orgId, repoId }) => getRepoSummary(databaseInstance, { orgId, repoId }),
     fetchPack: async ({ orgId, repoId }) => {
+      if (!packStorage) return null;
       let packRow: Awaited<ReturnType<typeof getLatestPack>> = null;
       try {
         packRow = await getLatestPack(databaseInstance, { orgId, repoId });
@@ -796,32 +786,63 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
         );
         return null;
       }
-      if (!packRow) return null;
-      const normalized = normalizePackBytes(packRow.pack_bytes);
-      if (!normalized) {
-        console.warn(
-          `[powersync-daemon] pack bytes missing or invalid for ${orgId}/${repoId} (oid: ${packRow.pack_oid ?? 'unknown'})`,
-        );
+      if (!packRow || !packRow.storage_key) return null;
+      const signed = await packStorage.createSignedUrl(packRow.storage_key).catch((error) => {
+        console.error('[powersync-daemon] failed to sign pack URL', error);
         return null;
-      }
+      });
+      if (!signed) return null;
       return {
-        packBase64: normalized.base64,
-        encoding: 'base64',
+        packUrl: signed.url,
         packOid: packRow.pack_oid,
         createdAt: packRow.created_at,
-        size: normalized.size,
+        size: packRow.size_bytes ?? undefined,
       };
+    },
+    getPackDownloadUrl: async ({ orgId, repoId, packOid }) => {
+      if (!packStorage) return null;
+      try {
+        const packRow = await getPackByOid(databaseInstance, { orgId, repoId, packOid });
+        if (!packRow || !packRow.storage_key) return null;
+        const signed = await packStorage.createSignedUrl(packRow.storage_key);
+        if (!signed) return null;
+        return { url: signed.url, expiresAt: signed.expiresAt, sizeBytes: packRow.size_bytes ?? null };
+      } catch (error) {
+        console.error('[powersync-daemon] failed to resolve pack download URL', error);
+        return null;
+      }
     },
     pushPack: async ({ orgId, repoId, payload }) => {
       try {
+        let resolvedPackOid = sanitizeOid(payload.packOid);
+        let storageKey: string | null = null;
+        let packSize: number | undefined;
+
+        if (payload.packBase64 && payload.packBase64.length > 0) {
+          if (!packStorage) {
+            throw new Error('Pack storage is not configured; cannot persist pack data');
+          }
+          const encoding = (payload.packEncoding ?? 'base64').toLowerCase();
+          if (encoding !== 'base64') {
+            throw new Error(`Unsupported pack encoding: ${encoding}`);
+          }
+          const packBuffer = Buffer.from(payload.packBase64, 'base64');
+          if (!resolvedPackOid) {
+            resolvedPackOid = createHash('sha1').update(packBuffer).digest('hex');
+          }
+          storageKey = `${orgId}/${repoId}/${resolvedPackOid}.pack`;
+          packSize = await packStorage.uploadPack(storageKey, packBuffer);
+        }
+
         const result = await persistPush(databaseInstance, {
           orgId,
           repoId,
           updates: payload.updates,
-          packBase64: payload.packBase64,
-          packEncoding: payload.packEncoding,
-          packOid: payload.packOid,
+          packOid: resolvedPackOid,
+          packStorageKey: storageKey ?? undefined,
+          packSizeBytes: packSize,
           summary: payload.summary ?? undefined,
+          createdAt: payload.createdAt ?? undefined,
           dryRun: payload.dryRun === true,
         });
         if (result.packSize !== undefined) {
@@ -838,6 +859,23 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
           message,
           results: buildPushErrorResults(payload.updates, message),
         } as PersistPushResult & { message: string };
+      }
+    },
+    deleteRepo: async ({ orgId, repoId }) => {
+      try {
+        const result = await deleteRepoData(databaseInstance, { orgId, repoId });
+        if (packStorage && result.storageKeys.length) {
+          await packStorage.deleteObjects(result.storageKeys).catch((error) => {
+            console.warn('[powersync-daemon] failed to delete pack blobs', error);
+          });
+        }
+        console.info(
+          `[powersync-daemon] deleted repo ${orgId}/${repoId} (packs removed: ${result.storageKeys.length})`,
+        );
+        return { ok: true, deletedPacks: result.storageKeys.length };
+      } catch (error) {
+        console.error(`[powersync-daemon] failed to delete repo ${orgId}/${repoId}`, error);
+        throw error;
       }
     },
   });

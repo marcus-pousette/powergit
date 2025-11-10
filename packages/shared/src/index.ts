@@ -5,7 +5,15 @@ export type RepoId = string;
 export interface RefRow { id: string; org_id: OrgId; repo_id: RepoId; name: string; target_sha: string; updated_at: string; }
 export interface CommitRow { id: string; org_id: OrgId; repo_id: RepoId; sha: string; author_name: string; author_email: string; authored_at: string; message: string; tree_sha: string; }
 export interface FileChangeRow { id: string; org_id: OrgId; repo_id: RepoId; commit_sha: string; path: string; additions: number; deletions: number; }
-export interface PackRow { id: string; org_id: OrgId; repo_id: RepoId; pack_oid: string; pack_bytes: string; created_at: string; }
+export interface PackRow {
+  id: string;
+  org_id: OrgId;
+  repo_id: RepoId;
+  pack_oid: string;
+  storage_key: string;
+  size_bytes: number | null;
+  created_at: string;
+}
 export interface RepoSummaryRow {
   org_id: OrgId;
   repo_id: RepoId;

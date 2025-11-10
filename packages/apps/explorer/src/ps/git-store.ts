@@ -7,8 +7,10 @@ export type PackRow = {
   org_id: string
   repo_id: string
   pack_oid: string
-  pack_bytes: string
+  storage_key: string
+  size_bytes: number | null
   created_at: string | null
+  pack_bytes?: string
 }
 
 export type TreeEntry = {
@@ -26,6 +28,8 @@ export type IndexProgress = {
   error: string | null
 }
 
+type PackDownloader = (pack: PackRow) => Promise<Uint8Array>
+
 export class GitObjectStore {
   private readonly packStore = new PackFileStore()
   private fs = new PowerSyncFs({ packStore: this.packStore })
@@ -35,6 +39,7 @@ export class GitObjectStore {
   private readonly indexedPacks = new Set<string>()
   private readonly queue: PackRow[] = []
   private readonly queuedPackOids = new Set<string>()
+  private packDownloader: PackDownloader | null = null
 
   private processingJob: Promise<void> | null = null
   private processedInBatch = 0
@@ -46,6 +51,10 @@ export class GitObjectStore {
 
   constructor() {
     this.restoreIndexedSet()
+  }
+
+  setPackDownloader(downloader: PackDownloader | null) {
+    this.packDownloader = downloader
   }
 
   private async ensureDirectory(path: string) {
@@ -133,7 +142,11 @@ export class GitObjectStore {
 
     let appended = false
     for (const pack of sorted) {
-      if (!pack.pack_bytes || pack.pack_bytes.length === 0) continue
+      const hasInlineBytes = typeof pack.pack_bytes === 'string' && pack.pack_bytes.length > 0
+      if (!hasInlineBytes && !this.packDownloader) {
+        console.warn('[gitStore] missing pack downloader for pack', pack.pack_oid)
+        continue
+      }
       if (this.indexedPacks.has(pack.pack_oid)) {
         const exists = await this.packExists(pack.pack_oid)
         if (exists) continue
@@ -237,7 +250,7 @@ export class GitObjectStore {
       this.persistIndexedSet()
     }
 
-    const decoded = this.decodePack(pack.pack_bytes)
+    const decoded = await this.resolvePackBytes(pack)
     const writeBytes = decoded instanceof Uint8Array ? new Uint8Array(decoded) : new Uint8Array(decoded)
     const writeCopy = writeBytes.slice()
     await this.fs
@@ -259,7 +272,7 @@ export class GitObjectStore {
         message: (error as Error | undefined)?.message ?? null,
         stack: (error as Error | undefined)?.stack ?? null,
         packOid: pack.pack_oid,
-        packSize: pack.pack_bytes?.length ?? null,
+        packSize: pack.size_bytes ?? null,
         indexFileRelativePath,
       }
       console.error('[gitStore] indexPack threw', {
@@ -269,6 +282,20 @@ export class GitObjectStore {
     })
     this.indexedPacks.add(pack.pack_oid)
     this.persistIndexedSet()
+  }
+
+  private async resolvePackBytes(pack: PackRow): Promise<Uint8Array> {
+    if (typeof pack.pack_bytes === 'string' && pack.pack_bytes.length > 0) {
+      return this.decodePack(pack.pack_bytes)
+    }
+    if (!this.packDownloader) {
+      throw new Error('Pack bytes unavailable (no downloader configured)')
+    }
+    const bytes = await this.packDownloader(pack)
+    if (!(bytes instanceof Uint8Array)) {
+      throw new Error('Pack downloader must return Uint8Array')
+    }
+    return bytes
   }
 
   private decodePack(base64: string): Uint8Array {

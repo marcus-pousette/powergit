@@ -120,7 +120,7 @@ export class GithubImportManager {
       repoDir = join(workspaceDir, 'repo');
 
       await this.runStep(job, 'clone', async () => {
-        await runGit(['clone', request.repoUrl, repoDir!], { cwd: workspaceDir! });
+        await runGit(['clone', '--progress', request.repoUrl, repoDir!], { cwd: workspaceDir! });
         return `Cloned ${request.owner}/${request.repo}`;
       });
 
@@ -427,6 +427,8 @@ function escapeForCmd(value: string): string {
 async function runGit(args: string[], options: { cwd: string }): Promise<{ stdout: string; stderr: string }> {
   const display = `git ${args.join(' ')}`;
   console.info(`[powersync-daemon] ${display} (cwd: ${options.cwd})`);
+  const progressCommands = new Set(['clone', 'fetch', 'push']);
+  const watchProgress = progressCommands.has(args[0]?.toLowerCase() ?? '');
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: options.cwd,
@@ -434,11 +436,38 @@ async function runGit(args: string[], options: { cwd: string }): Promise<{ stdou
     });
     let stdout = '';
     let stderr = '';
+    let lastPercent = -1;
+    let lastProgressLog = 0;
+    let emittedProgress = false;
+    const maybeLogProgress = (line: string) => {
+      const clean = line.trim();
+      if (!clean) return;
+      const percentMatch = clean.match(/(\d{1,3})%/);
+      if (!percentMatch) return;
+      const percent = Number(percentMatch[1]);
+      const now = Date.now();
+      const shouldLog =
+        percent === 100 ||
+        percent - lastPercent >= 5 ||
+        now - lastProgressLog >= 2000;
+      if (!shouldLog) return;
+      lastPercent = percent;
+      lastProgressLog = now;
+      emittedProgress = true;
+      console.info(`[powersync-daemon] ${display} progress: ${clean}`);
+    };
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (watchProgress) {
+        const normalized = text.replace(/\r/g, '\n');
+        for (const line of normalized.split('\n')) {
+          maybeLogProgress(line);
+        }
+      }
     });
     child.once('error', reject);
     child.once('close', (code) => {
@@ -446,7 +475,7 @@ async function runGit(args: string[], options: { cwd: string }): Promise<{ stdou
         if (stdout.trim()) {
           console.info(`[powersync-daemon] ${display} stdout:`, stdout.trim());
         }
-        if (stderr.trim()) {
+        if (stderr.trim() && !emittedProgress) {
           console.info(`[powersync-daemon] ${display} stderr:`, stderr.trim());
         }
         resolve({ stdout, stderr });
@@ -473,8 +502,8 @@ async function ensureRemoteConfigured(repoDir: string, remoteUrl: string): Promi
 
 async function pushAllReferences(repoDir: string): Promise<void> {
   await ensurePowerSyncRemoteHelper();
-  await runGit(['fetch', '--all', '--prune'], { cwd: repoDir });
-  await runGit(['push', '--mirror', REMOTE_NAME], { cwd: repoDir });
+  await runGit(['fetch', '--progress', '--all', '--prune'], { cwd: repoDir });
+  await runGit(['push', '--progress', '--mirror', REMOTE_NAME], { cwd: repoDir });
 }
 
 async function detectCurrentBranch(repoDir: string): Promise<string | null> {

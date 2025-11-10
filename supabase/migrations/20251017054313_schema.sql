@@ -37,7 +37,8 @@ create table if not exists public.objects (
   org_id text not null,
   repo_id text not null,
   pack_oid text not null,
-  pack_bytes text not null,
+  storage_key text not null,
+  size_bytes bigint not null,
   created_at timestamptz not null default now()
 );
 

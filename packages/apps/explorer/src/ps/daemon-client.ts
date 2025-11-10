@@ -219,6 +219,60 @@ export function isDaemonPreferred(): boolean {
   return daemonEnabled
 }
 
+type PackUrlResponse = { url?: string; expiresAt?: string | null; sizeBytes?: number | null }
+
+export async function requestPackDownloadUrl(orgId: string, repoId: string, packOid: string): Promise<PackUrlResponse | null> {
+  if (!daemonEnabled) return null
+  const path = `/orgs/${encodeURIComponent(orgId)}/repos/${encodeURIComponent(repoId)}/packs/${encodeURIComponent(packOid)}`
+  const { status, data } = await fetchDaemonJson<PackUrlResponse>(path)
+  if (status !== 200 || !data?.url) {
+    return null
+  }
+  return data
+}
+
+export async function downloadPackBytes(orgId: string, repoId: string, packOid: string): Promise<Uint8Array | null> {
+  const maxAttempts = 5
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const info = await requestPackDownloadUrl(orgId, repoId, packOid)
+    if (info?.url) {
+      try {
+        const res = await fetch(info.url)
+        if (!res.ok) {
+          console.warn('[Explorer][daemon] pack download returned', res.status, packOid)
+        } else {
+          const buffer = await res.arrayBuffer()
+          return new Uint8Array(buffer)
+        }
+      } catch (error) {
+        console.error('[Explorer][daemon] failed to download pack', error)
+      }
+    }
+    if (attempt < maxAttempts) {
+      await delay(400 * attempt)
+    }
+  }
+  return null
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+export async function deleteDaemonRepo(orgId: string, repoId: string): Promise<boolean> {
+  if (!daemonEnabled) return false
+  const path = `/orgs/${encodeURIComponent(orgId)}/repos/${encodeURIComponent(repoId)}`
+  try {
+    const res = await fetch(`${daemonBaseUrl}${path}`, { method: 'DELETE' })
+    return res.ok
+  } catch (error) {
+    console.warn('[Explorer][daemon] failed to delete repo', error)
+    return false
+  }
+}
+
 export async function completeDaemonDeviceLogin(payload: {
   challengeId: string
   token: string

@@ -142,12 +142,17 @@ type FileTreePaneProps = {
   hasFallbackTree: boolean
   fallbackTree: FallbackNode
   indexingLabel: string
+  indexingPercent: number | null
+  indexingProcessed: number
+  packCount: number
+  hasPackMetadata: boolean
   indexError?: string | null
   selectedCommit: string | null
   renderTree: (path: string, depth: number) => React.ReactNode
   handleFileSelect: (path: string) => void
   selectedPath: string | null
   isDark: boolean
+  showFallback: boolean
   headerAction?: React.ReactNode
 }
 
@@ -248,7 +253,8 @@ function Files() {
           org_id: o.org_id,
           repo_id: o.repo_id,
           pack_oid: o.pack_oid,
-          pack_bytes: o.pack_bytes,
+          storage_key: o.storage_key,
+          size_bytes: o.size_bytes,
           created_at: o.created_at,
         })),
     [objects, orgId, repoId],
@@ -385,7 +391,12 @@ function Files() {
     setPendingPath(loadStoredPath(selectedBranchName))
   }, [loadStoredPath, selectedBranchName])
 
-  const packKey = React.useMemo(() => packRows.map((row) => row.pack_oid).join('|'), [packRows])
+  const packCount = packRows.length
+  const hasPackMetadata = packCount > 0
+  const packKey = React.useMemo(
+    () => packRows.map((row) => `${row.pack_oid}:${row.storage_key ?? ''}`).join('|'),
+    [packRows],
+  )
   const [indexProgress, setIndexProgress] = React.useState(() => gitStore.getProgress())
 
   React.useEffect(() => gitStore.subscribe((progress) => setIndexProgress(progress)), [])
@@ -413,6 +424,17 @@ function Files() {
     }
     return 'Repository content is syncing…'
   }, [indexProgress])
+  const indexingPercent = React.useMemo(() => {
+    if (indexProgress.total > 0) {
+      const processed = Math.min(indexProgress.processed, indexProgress.total)
+      return Math.min(100, Math.round((processed / indexProgress.total) * 100))
+    }
+    if (indexProgress.status === 'ready' && indexProgress.processed > 0) {
+      return 100
+    }
+    return null
+  }, [indexProgress])
+  const indexingProcessed = indexProgress.processed ?? 0
 
   const [expandedDirs, setExpandedDirs] = React.useState<Set<string>>(new Set())
   const [treeCache, setTreeCache] = React.useState<Map<string, TreeEntry[]>>(new Map())
@@ -420,6 +442,7 @@ function Files() {
   const [loadingDirs, setLoadingDirs] = React.useState<Set<string>>(new Set())
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null)
   const [viewerState, setViewerState] = React.useState<ViewerState>({ status: 'idle' })
+  const [readyCommits, setReadyCommits] = React.useState<Set<string>>(() => new Set())
 
   const rootLoaded = treeCache.has('')
   const rootLoading = loadingDirs.has('')
@@ -449,6 +472,7 @@ function Files() {
     setLoadingDirs(new Set())
     setSelectedPath(null)
     setViewerState({ status: 'idle' })
+    setReadyCommits(new Set())
   }, [])
 
   const previousCommitRef = React.useRef<string | null>(null)
@@ -487,6 +511,12 @@ function Files() {
           next.set(path, sortedEntries)
           return next
         })
+        setReadyCommits((prev) => {
+          if (prev.has(commitOid)) return prev
+          const next = new Set(prev)
+          next.add(commitOid)
+          return next
+        })
       } catch (error) {
         setTreeErrors((prev) => {
           const next = new Map(prev)
@@ -510,6 +540,14 @@ function Files() {
     void loadDirectory('', selectedCommit)
   }, [indexStatus, selectedCommit, rootLoaded, rootLoading, loadDirectory])
 
+  React.useEffect(() => {
+    if (!hasPackMetadata || rootLoaded || rootLoading || !selectedCommit) return
+    const retry = setTimeout(() => {
+      void loadDirectory('', selectedCommit)
+    }, 500)
+    return () => clearTimeout(retry)
+  }, [hasPackMetadata, rootLoaded, rootLoading, selectedCommit, loadDirectory])
+
   const handleToggleDirectory = React.useCallback(
     (path: string) => {
       setExpandedDirs((prev) => {
@@ -528,18 +566,14 @@ function Files() {
 
   const handleFileSelect = React.useCallback(
     async (fullPath: string) => {
-    setSelectedPath(fullPath)
-    setPendingPath(null)
+      setSelectedPath(fullPath)
+      setPendingPath(null)
       if (indexStatus === 'error') {
         setViewerState({
           status: 'error',
           path: fullPath,
           message: indexError ?? 'Repository packs failed to sync; refresh or retry later.',
         })
-        return
-      }
-      if (indexStatus !== 'ready') {
-        setViewerState({ status: 'indexing' })
         return
       }
       if (!selectedCommit) {
@@ -550,7 +584,11 @@ function Files() {
         })
         return
       }
-      setSelectedPath(fullPath)
+      const commitReady = readyCommits.has(selectedCommit)
+      if (indexStatus !== 'ready' && !commitReady) {
+        setViewerState({ status: 'indexing' })
+        return
+      }
       setViewerState({ status: 'loading', path: fullPath })
       try {
         const { content, oid } = await gitStore.readFile(selectedCommit, fullPath)
@@ -575,13 +613,13 @@ function Files() {
         })
       }
     },
-    [selectedCommit, indexStatus, indexError],
+    [selectedCommit, indexStatus, indexError, readyCommits],
   )
 
   React.useEffect(() => {
-    if (indexStatus !== 'ready' || !selectedCommit || !pendingPath) return
+    if ((!readyCommits.has(selectedCommit ?? '') && indexStatus !== 'ready') || !selectedCommit || !pendingPath) return
     void handleFileSelect(pendingPath)
-  }, [indexStatus, selectedCommit, pendingPath, handleFileSelect])
+  }, [indexStatus, selectedCommit, pendingPath, handleFileSelect, readyCommits])
 
   const downloadCurrentBlob = React.useCallback(async () => {
     if (!selectedCommit) return
@@ -798,7 +836,14 @@ function Files() {
       case 'indexing':
         return (
           <div className={neutralStatusCenterClass} data-testid="file-viewer-status">
-            {indexingLabel}
+            {!hasPackMetadata ? (
+              <span className="flex items-center gap-2 text-sm">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />
+                Waiting for pack metadata from the daemon…
+              </span>
+            ) : (
+              indexingLabel
+            )}
           </div>
         )
       case 'loading':
@@ -953,6 +998,9 @@ function Files() {
     ? 'border-b border-slate-700 bg-slate-900/60 px-4 py-2 text-sm font-medium text-slate-100 flex items-center justify-between gap-2'
     : 'border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 flex items-center justify-between gap-2'
 
+  const selectedCommitReady = selectedCommit ? readyCommits.has(selectedCommit) : false
+  const showFallbackTree = indexStatus !== 'ready' || !selectedCommitReady || !selectedCommit
+
   const treePaneProps: FileTreePaneProps = {
     className: treePanelClass,
     headerClass: treeHeaderClass,
@@ -964,14 +1012,18 @@ function Files() {
     hasFallbackTree,
     fallbackTree,
     indexingLabel,
+    indexingPercent,
+    indexingProcessed,
+    packCount,
+    hasPackMetadata,
     indexError,
     selectedCommit,
     renderTree,
     handleFileSelect,
     selectedPath,
     isDark,
+    showFallback: showFallbackTree,
   }
-
   const viewerPaneProps: FileViewerPaneProps = {
     className: viewerContainerClass,
     headerClass: viewerHeaderClass,
@@ -1033,16 +1085,86 @@ const FileTreePane = React.forwardRef<HTMLDivElement, FileTreePaneProps>(functio
     hasFallbackTree,
     fallbackTree,
     indexingLabel,
+    indexingPercent,
+    indexingProcessed,
+    packCount,
+    hasPackMetadata,
     indexError,
     selectedCommit,
     renderTree,
     handleFileSelect,
     selectedPath,
     isDark,
+    showFallback,
     headerAction,
   },
   ref,
 ) {
+  const [fallbackExpandedDirs, setFallbackExpandedDirs] = React.useState<Set<string>>(new Set())
+
+  React.useEffect(() => {
+    if (!showFallback) {
+      setFallbackExpandedDirs(new Set())
+    }
+  }, [showFallback])
+
+  const toggleFallbackDir = React.useCallback((path: string) => {
+    setFallbackExpandedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }, [])
+
+  const waitingForMetadata = !hasPackMetadata
+
+  const waitingMessage = (
+    <div className={`flex items-center gap-2 text-[11px] ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+      <span
+        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
+        aria-hidden
+      />
+      <span>Waiting for pack metadata from the daemon…</span>
+    </div>
+  )
+
+  const progressDetails = (() => {
+    if (waitingForMetadata) {
+      return (
+        <div className="mt-2">
+          {waitingMessage}
+        </div>
+      )
+    }
+    if (typeof indexingPercent === 'number') {
+      return (
+        <div className="mt-2 space-y-1">
+          <div className={`text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+            {indexingPercent}% complete
+          </div>
+          <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
+            <div
+              className={`h-full rounded-full ${isDark ? 'bg-emerald-400' : 'bg-emerald-500'} transition-[width]`}
+              style={{ width: `${indexingPercent}%` }}
+            />
+          </div>
+        </div>
+      )
+    }
+    if (indexingProcessed > 0) {
+      return (
+        <div className={`mt-2 text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+          Processed {indexingProcessed} pack{indexingProcessed === 1 ? '' : 's'} …
+        </div>
+      )
+    }
+    return null
+  })()
+
   return (
     <div ref={ref} className={className}>
       <div className={`${headerClass} flex items-center justify-between gap-2`}>
@@ -1050,25 +1172,56 @@ const FileTreePane = React.forwardRef<HTMLDivElement, FileTreePaneProps>(functio
         {headerAction ?? null}
       </div>
       <div className={bodyClass} data-testid="file-explorer-tree">
-        {indexStatus !== 'ready' ? (
+        {showFallback ? (
           hasFallbackTree ? (
             <div className="space-y-2">
               <div className={fallbackInfoClass}>
-                <div>{indexingLabel}</div>
-                {indexStatus !== 'error' ? (
-                  <div className={isDark ? 'text-emerald-200/80' : undefined}>
-                    Showing recently replicated paths while pack indexing completes.
-                  </div>
-                ) : indexError ? (
-                  <div className={isDark ? 'text-red-300' : 'text-red-500'}>{indexError}</div>
-                ) : null}
+                {waitingForMetadata ? (
+                  progressDetails
+                ) : (
+                  <>
+                    <div>{indexingLabel}</div>
+                    {indexStatus !== 'error' ? (
+                      <div className={isDark ? 'text-emerald-200/80' : undefined}>
+                        Showing recently replicated paths while this branch finishes indexing.
+                      </div>
+                    ) : indexError ? (
+                      <div className={isDark ? 'text-red-300' : 'text-red-500'}>{indexError}</div>
+                    ) : null}
+                    {progressDetails}
+                  </>
+                )}
               </div>
               <div className="space-y-0.5">
-                {renderFallbackTree(fallbackTree, 0, handleFileSelect, selectedPath, isDark)}
+                {renderFallbackTree(
+                  fallbackTree,
+                  0,
+                  handleFileSelect,
+                  selectedPath,
+                  isDark,
+                  fallbackExpandedDirs,
+                  toggleFallbackDir,
+                )}
               </div>
             </div>
           ) : (
-            <div className={fallbackNoticeClass}>{indexingLabel}</div>
+            <div className={fallbackNoticeClass}>
+              {waitingForMetadata ? (
+                progressDetails
+              ) : (
+                <>
+                  <div>{indexingLabel}</div>
+                  {indexStatus !== 'error' ? (
+                    <div className={isDark ? 'text-emerald-200/80' : undefined}>
+                      Showing recently replicated paths while this branch finishes indexing.
+                    </div>
+                  ) : indexError ? (
+                    <div className={isDark ? 'text-red-300' : 'text-red-500'}>{indexError}</div>
+                  ) : null}
+                  {progressDetails}
+                </>
+              )}
+            </div>
           )
         ) : selectedCommit ? (
           renderTree('', 0)
@@ -1317,28 +1470,39 @@ function renderFallbackTree(
   onSelect: (path: string) => void,
   selectedPath: string | null,
   isDark: boolean,
+  expandedDirs: Set<string>,
+  toggleDir: (path: string) => void,
 ): React.ReactNode {
   if (node.type !== 'directory') {
     const selected = selectedPath === node.path
+    const fileButtonBase =
+      'flex w-full items-center rounded-md px-2 py-1 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+    const fileButtonState = selected
+      ? isDark
+        ? 'bg-emerald-500/20 text-emerald-200'
+        : 'bg-emerald-100 text-emerald-700'
+      : isDark
+        ? 'text-slate-200 hover:bg-slate-800'
+        : 'text-slate-700 hover:bg-slate-100'
+    const fileIconClass = isDark ? 'text-[13px] text-slate-400' : 'text-[13px] text-slate-500'
+    const fileNameClass = selected
+      ? isDark
+        ? 'truncate text-emerald-100'
+        : 'truncate text-emerald-800'
+      : 'truncate'
     return (
       <div key={`fallback-${node.path}`} className="select-none">
         <button
           type="button"
-          className={`flex w-full items-center rounded-md px-2 py-1 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40 ${
-            selected
-              ? isDark
-                ? 'bg-emerald-500/20 text-emerald-200'
-                : 'bg-emerald-100 text-emerald-700'
-              : isDark
-                ? 'text-slate-200 hover:bg-slate-800'
-                : 'text-slate-700 hover:bg-slate-100'
-          }`}
-          style={{ paddingLeft: depth * 12 + 16 }}
+          className={`${fileButtonBase} ${fileButtonState}`}
+          style={{ paddingLeft: depth * 12 }}
           onClick={() => onSelect(node.path)}
           data-testid="file-tree-file"
         >
-          <span className={`mr-2 text-[11px] leading-none ${isDark ? 'text-slate-400' : 'text-slate-400'}`}>📄</span>
-          <span className={`truncate ${selected ? (isDark ? 'text-emerald-100' : 'text-emerald-800') : ''}`}>{node.name}</span>
+          <span className="mr-2 flex shrink-0 items-center" aria-hidden>
+            <IoDocumentTextOutline className={fileIconClass} />
+          </span>
+          <span className={fileNameClass}>{node.name}</span>
         </button>
       </div>
     )
@@ -1354,22 +1518,34 @@ function renderFallbackTree(
 
   return node.children.map((child) => {
     if (child.type === 'directory') {
+      const expanded = expandedDirs.has(child.path)
+      const dirButtonClass = isDark
+        ? 'flex w-full items-center rounded-md px-2 py-1 text-left text-xs text-slate-300 transition hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
+        : 'flex w-full items-center rounded-md px-2 py-1 text-left text-xs text-slate-600 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+      const dirIconClass = isDark ? 'text-[12px] text-slate-400' : 'text-[12px] text-slate-400'
+      const dirTextClass = isDark ? 'truncate font-medium text-slate-100' : 'truncate font-medium text-slate-700'
       return (
         <div key={`fallback-${child.path}`} className="select-none">
-          <div
-            className={`flex w-full items-center px-2 py-1 text-left text-xs ${isDark ? 'text-slate-400' : 'text-slate-400'}`}
+          <button
+            type="button"
+            className={dirButtonClass}
             style={{ paddingLeft: depth * 12 }}
+            onClick={() => toggleDir(child.path)}
           >
-            <span className={`mr-1 text-[10px] leading-none ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>▸</span>
-            <span className="truncate">{child.name}</span>
-          </div>
-          <div className="ml-3 space-y-0.5">
-            {renderFallbackTree(child, depth + 1, onSelect, selectedPath, isDark)}
-          </div>
+            <span className="mr-2 flex shrink-0 items-center" aria-hidden>
+              {expanded ? <IoChevronDownOutline className={dirIconClass} /> : <IoChevronForwardOutline className={dirIconClass} />}
+            </span>
+            <span className={dirTextClass}>{child.name}</span>
+          </button>
+          {expanded && (
+            <div className="space-y-0.5">
+              {renderFallbackTree(child, depth + 1, onSelect, selectedPath, isDark, expandedDirs, toggleDir)}
+            </div>
+          )}
         </div>
       )
     }
-    return renderFallbackTree(child, depth, onSelect, selectedPath, isDark)
+    return renderFallbackTree(child, depth, onSelect, selectedPath, isDark, expandedDirs, toggleDir)
   })
 }
 

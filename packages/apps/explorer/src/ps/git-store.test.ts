@@ -5,6 +5,8 @@ import { GitObjectStore, type IndexProgress, type PackRow } from './git-store'
 const BASE_PACK: Omit<PackRow, 'id' | 'pack_oid' | 'created_at'> = {
   org_id: 'org-1',
   repo_id: 'repo-1',
+  storage_key: 'org-1/repo-1/placeholder',
+  size_bytes: 1,
   pack_bytes: 'Zg==', // "f" in base64
 }
 
@@ -13,6 +15,7 @@ const createPack = (packOid: string, createdAt = new Date().toISOString()): Pack
   pack_oid: packOid,
   created_at: createdAt,
   ...BASE_PACK,
+  storage_key: `org-1/repo-1/${packOid}.pack`,
 })
 
 const cloneProgress = (progress: IndexProgress): IndexProgress => ({ ...progress })
@@ -64,6 +67,11 @@ describe('GitObjectStore indexing queue', () => {
       .mockImplementation(async function mockProcess(this: GitObjectStore, pack: PackRow) {
         ;(this as unknown as { indexedPacks: Set<string> }).indexedPacks.add(pack.pack_oid)
       })
+    vi.spyOn(store as unknown as { packExists(oid: string): Promise<boolean> }, 'packExists').mockImplementation(
+      async function mockPackExists(this: GitObjectStore, oid: string) {
+        return (this as unknown as { indexedPacks: Set<string> }).indexedPacks.has(oid)
+      },
+    )
     vi.spyOn(store as unknown as { yieldToBrowser(): Promise<void> }, 'yieldToBrowser').mockResolvedValue(undefined)
 
     await store.indexPacks([createPack('alpha')])

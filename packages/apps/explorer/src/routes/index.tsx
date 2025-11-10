@@ -6,6 +6,8 @@ import { useCollections } from '@tsdb/collections'
 import { GithubImportCard, REPO_IMPORT_EVENT } from '../components/GithubImportCard'
 import type { Database } from '@ps/schema'
 import { useTheme } from '../ui/theme-context'
+import { deleteDaemonRepo, isDaemonPreferred } from '@ps/daemon-client'
+import { IoTrashOutline } from 'react-icons/io5'
 
 export const Route = createFileRoute('/' as any)({
   component: Home,
@@ -28,6 +30,7 @@ type ImportEventDetail = {
 export function Home() {
   const { theme } = useTheme()
   const { refs } = useCollections()
+  const preferDaemon = React.useMemo(() => isDaemonPreferred(), [])
   type RefRow = Pick<Database['refs'], 'org_id' | 'repo_id' | 'name' | 'updated_at'>
   const { data: refRows = [] } = useLiveQuery(
     (q) =>
@@ -70,6 +73,7 @@ export function Home() {
   }, [refRows])
 
   const [pendingImports, setPendingImports] = React.useState<Record<string, RepoSummary>>({})
+  const [deletingRepos, setDeletingRepos] = React.useState<Record<string, boolean>>({})
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return
@@ -148,6 +152,38 @@ export function Home() {
   const openButtonClasses = isDark
     ? 'inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40'
     : 'inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200'
+  const deleteButtonClasses = isDark
+    ? 'inline-flex items-center justify-center rounded-xl border border-red-500/40 px-3 py-2 text-sm text-red-200 transition hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400'
+    : 'inline-flex items-center justify-center rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600 transition hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200'
+
+  const handleDeleteRepo = React.useCallback(
+    async (repo: RepoSummary) => {
+      if (!preferDaemon) return
+      const repoKey = `${repo.orgId}/${repo.repoId}`
+      const confirmed = typeof window === 'undefined' ? true : window.confirm(`Remove ${repoKey} from the local daemon?`)
+      if (!confirmed) return
+      setDeletingRepos((prev) => ({ ...prev, [repoKey]: true }))
+      const ok = await deleteDaemonRepo(repo.orgId, repo.repoId)
+      setDeletingRepos((prev) => {
+        const next = { ...prev }
+        delete next[repoKey]
+        return next
+      })
+      if (!ok) {
+        if (typeof window !== 'undefined') {
+          window.alert('Failed to remove repo from daemon. Check daemon logs for details.')
+        }
+        return
+      }
+      setPendingImports((prev) => {
+        if (!prev[repoKey]) return prev
+        const next = { ...prev }
+        delete next[repoKey]
+        return next
+      })
+    },
+    [preferDaemon],
+  )
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -192,22 +228,37 @@ export function Home() {
                       {branchCount} branch{branchCount === 1 ? '' : 'es'} · Updated {formatTimestamp(repo.updatedAt)}
                     </div>
                   </div>
-                  <Link
-                    to="/org/$orgId/repo/$repoId/files"
-                    params={{ orgId: repo.orgId, repoId: repo.repoId }}
-                    className={openButtonClasses}
-                    data-testid="repository-open-button"
-                  >
-                    Open
-                    <span
-                      aria-hidden
-                      className={`${
-                        isDark ? 'text-slate-500 group-hover:text-slate-300' : 'text-slate-400 group-hover:text-slate-500'
-                      }`}
+                  <div className="flex items-center gap-2">
+                    {preferDaemon ? (
+                      <button
+                        type="button"
+                        className={deleteButtonClasses}
+                        title="Remove from daemon"
+                        aria-label={`Remove ${repoKey}`}
+                        disabled={Boolean(deletingRepos[repoKey])}
+                        onClick={() => handleDeleteRepo(repo)}
+                        data-testid="repository-delete-button"
+                      >
+                        {deletingRepos[repoKey] ? <span className="text-xs">…</span> : <IoTrashOutline />}
+                      </button>
+                    ) : null}
+                    <Link
+                      to="/org/$orgId/repo/$repoId/files"
+                      params={{ orgId: repo.orgId, repoId: repo.repoId }}
+                      className={openButtonClasses}
+                      data-testid="repository-open-button"
                     >
-                      →
-                    </span>
-                  </Link>
+                      Open
+                      <span
+                        aria-hidden
+                        className={`${
+                          isDark ? 'text-slate-500 group-hover:text-slate-300' : 'text-slate-400 group-hover:text-slate-500'
+                        }`}
+                      >
+                        →
+                      </span>
+                    </Link>
+                  </div>
                 </li>
               )
             })}
