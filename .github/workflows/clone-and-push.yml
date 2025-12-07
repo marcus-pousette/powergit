@@ -39,6 +39,9 @@ jobs:
         run: |
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
           echo "$PWD/packages/remote-helper/node_modules/.bin" >> "$GITHUB_PATH"
+          ln -sf "$PWD/packages/remote-helper/dist/remote-helper/src/bin.js" "$PWD/packages/remote-helper/dist/remote-helper/src/git-remote-powersync"
+          chmod +x "$PWD/packages/remote-helper/dist/remote-helper/src/git-remote-powersync"
+          echo "$PWD/packages/remote-helper/dist/remote-helper/src" >> "$GITHUB_PATH"
 
       - name: Verify remote-helper is available
         run: |
@@ -46,6 +49,7 @@ jobs:
             echo "git-remote-powersync is missing from PATH. Contents of node_modules/.bin:"
             ls -l "$PWD/node_modules/.bin" || true
             ls -l "$PWD/packages/remote-helper/node_modules/.bin" || true
+            ls -l "$PWD/packages/remote-helper/dist/remote-helper/src" || true
             exit 1
           fi
           git remote -h | head -n 5
