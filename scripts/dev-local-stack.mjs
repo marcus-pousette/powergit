@@ -684,6 +684,8 @@ function buildExportLines(env, authUser) {
   ]
 
   if (authUser) {
+    lines.push(`export POWERGIT_EMAIL=${JSON.stringify(authUser.email)}`)
+    lines.push(`export POWERGIT_PASSWORD=${JSON.stringify(authUser.password)}`)
     lines.push(`export POWERSYNC_SUPABASE_EMAIL=${JSON.stringify(authUser.email)}`)
     lines.push(`export POWERSYNC_SUPABASE_PASSWORD=${JSON.stringify(authUser.password)}`)
     lines.push(`export PSGIT_TEST_SUPABASE_EMAIL=${JSON.stringify(authUser.email)}`)
@@ -856,6 +858,8 @@ async function startStack() {
   const authUser = await ensureSupabaseAuthUser(env)
   if (authUser) {
     const authEnv = normalizeEnvValues({
+      POWERGIT_EMAIL: authUser.email,
+      POWERGIT_PASSWORD: authUser.password,
       POWERSYNC_SUPABASE_EMAIL: authUser.email,
       POWERSYNC_SUPABASE_PASSWORD: authUser.password,
       PSGIT_TEST_SUPABASE_EMAIL: authUser.email,

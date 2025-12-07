@@ -48,14 +48,18 @@ function resolveSupabaseAuthConfig(env) {
     process.env.PSGIT_TEST_SUPABASE_ANON_KEY,
   );
   const email = firstNonEmpty(
+    env?.POWERGIT_EMAIL,
     env?.POWERSYNC_SUPABASE_EMAIL,
     env?.PSGIT_TEST_SUPABASE_EMAIL,
+    process.env.POWERGIT_EMAIL,
     process.env.POWERSYNC_SUPABASE_EMAIL,
     process.env.PSGIT_TEST_SUPABASE_EMAIL,
   );
   const password = firstNonEmpty(
+    env?.POWERGIT_PASSWORD,
     env?.POWERSYNC_SUPABASE_PASSWORD,
     env?.PSGIT_TEST_SUPABASE_PASSWORD,
+    process.env.POWERGIT_PASSWORD,
     process.env.POWERSYNC_SUPABASE_PASSWORD,
     process.env.PSGIT_TEST_SUPABASE_PASSWORD,
   );
@@ -218,7 +222,7 @@ export async function authenticateDaemonWithSupabase({
     log(
       logger,
       'warn',
-      '[dev] Supabase email/password unavailable — skipping daemon authentication (provide POWERSYNC_SUPABASE_EMAIL/PASSWORD).',
+      '[dev] Supabase email/password unavailable — skipping daemon authentication (provide POWERGIT_EMAIL/POWERGIT_PASSWORD or POWERSYNC_SUPABASE_EMAIL/PASSWORD).',
     );
     return { status: null, authenticated: false, challengeId: null };
   }

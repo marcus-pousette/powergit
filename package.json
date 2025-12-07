@@ -30,7 +30,8 @@
     "prod:supabase:start": "pnpx supabase start",
     "prod:supabase:stop": "pnpx supabase stop",
     "prod:migrate": "pnpx supabase db push",
-    "prod:migrate:reset": "pnpx supabase db reset"
+    "prod:migrate:reset": "pnpx supabase db reset",
+    "create:test-user": "node ./scripts/create-test-user.mjs"
   },
   "pnpm": {
     "overrides": {
