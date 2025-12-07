@@ -321,17 +321,6 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   const packBucket = (process.env.POWERSYNC_SUPABASE_STORAGE_BUCKET ?? 'git-packs').trim();
   const packSignTtl = Number.parseInt(process.env.POWERSYNC_SUPABASE_STORAGE_TTL ?? '120', 10);
   let packStorage: PackStorage | null = null;
-  try {
-    packStorage = new PackStorage(supabaseWriterClient, {
-      bucket: packBucket,
-      baseUrl: supabaseUrl,
-      signExpiresIn: Number.isFinite(packSignTtl) ? packSignTtl : 120,
-    });
-    await packStorage.ensureBucket();
-  } catch (error) {
-    packStorage = null;
-    console.error('[powersync-daemon] failed to initialize pack storage', error);
-  }
 
   let supabaseSession: Session | null = null;
   let supabaseAuthSubscription: { unsubscribe: () => void } | null = null;
@@ -460,6 +449,19 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
       const canStartWriter = writerUsesServiceRole || !isJwtExpired(authToken, 5_000);
       if (canStartWriter) {
         supabaseWriter.start();
+      }
+    }
+    if (!packStorage) {
+      try {
+        packStorage = new PackStorage(supabaseWriterClient, {
+          bucket: packBucket,
+          baseUrl: supabaseUrl,
+          signExpiresIn: Number.isFinite(packSignTtl) ? packSignTtl : 120,
+        });
+        await packStorage.ensureBucket();
+      } catch (error) {
+        console.error('[powersync-daemon] failed to initialize pack storage after login', error);
+        packStorage = null;
       }
     }
     scheduleConnect(`supabase-${source}`);
