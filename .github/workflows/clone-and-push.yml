@@ -29,8 +29,8 @@ jobs:
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@10 --activate
 
-      - name: Install dependencies (remote-helper only)
-        run: pnpm install --filter @pkg/remote-helper --ignore-scripts
+      - name: Install dependencies (workspace)
+        run: pnpm install --frozen-lockfile
 
       - name: Build remote-helper
         run: pnpm --filter @pkg/remote-helper build
