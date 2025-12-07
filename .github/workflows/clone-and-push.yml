@@ -57,6 +57,31 @@ jobs:
           fi
           git remote -h | head -n 5
 
+      - name: Start Powergit daemon
+        env:
+          POWERSYNC_SUPABASE_URL: ${{ secrets.POWERSYNC_SUPABASE_URL }}
+          POWERSYNC_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY }}
+          POWERSYNC_SUPABASE_JWT_SECRET: ${{ secrets.POWERSYNC_SUPABASE_JWT_SECRET }}
+          POWERSYNC_SUPABASE_EMAIL: ${{ secrets.POWERSYNC_SUPABASE_EMAIL }}
+          POWERSYNC_SUPABASE_PASSWORD: ${{ secrets.POWERSYNC_SUPABASE_PASSWORD }}
+          POWERSYNC_DAEMON_PORT: 5030
+        run: |
+          if [ -z "$POWERSYNC_SUPABASE_URL" ] || [ -z "$POWERSYNC_SUPABASE_SERVICE_ROLE_KEY" ] || [ -z "$POWERSYNC_SUPABASE_JWT_SECRET" ]; then
+            echo "Missing Supabase configuration (POWERSYNC_SUPABASE_URL/POWERSYNC_SUPABASE_SERVICE_ROLE_KEY/POWERSYNC_SUPABASE_JWT_SECRET)" && exit 1
+          fi
+          nohup pnpm --filter @svc/daemon start -- --port ${POWERSYNC_DAEMON_PORT:-5030} > daemon.log 2>&1 &
+          echo $! > daemon.pid
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:${POWERSYNC_DAEMON_PORT:-5030}/health" >/dev/null; then
+              echo "Daemon is healthy"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Daemon did not become healthy. Logs:" && cat daemon.log && exit 1
+            fi
+            sleep 1
+          done
+
       - name: Clone target repo
         run: |
           git clone "${{ github.event.inputs.git_url }}" workdir
@@ -68,11 +93,11 @@ jobs:
           POWERSYNC_EDGE_BASE_URL: ${{ github.event.inputs.edge_base_url || secrets.POWERSYNC_EDGE_BASE_URL }}
           POWERSYNC_ORG: ${{ github.event.inputs.org }}
           POWERSYNC_REPO: ${{ github.event.inputs.repo }}
+          POWERSYNC_DAEMON_URL: http://127.0.0.1:5030
+          POWERSYNC_DAEMON_AUTOSTART: "false"
         run: |
           cd workdir
-          if [ -z "$POWERSYNC_EDGE_BASE_URL" ]; then
-            echo "POWERSYNC_EDGE_BASE_URL is required" && exit 1
-          fi
+          POWERSYNC_EDGE_BASE_URL=${POWERSYNC_DAEMON_URL:-http://127.0.0.1:5030}
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
           git remote add powersync "powersync::$POWERSYNC_EDGE_BASE_URL/orgs/$POWERSYNC_ORG/repos/$POWERSYNC_REPO"
