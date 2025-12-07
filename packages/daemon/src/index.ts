@@ -277,17 +277,15 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
     sessionPathOverrideCandidates.find((value) => typeof value === 'string' && value.trim().length > 0) ?? undefined;
   const sessionPath = resolveSessionPath(sessionPathOverride);
   const supabaseAuthPath = resolveSupabaseSessionPath(sessionPath);
-  const supabaseUrl = process.env.POWERSYNC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? null;
-  const supabaseServiceRole =
-    process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? null;
-  const supabaseAnonKey =
-    process.env.POWERSYNC_SUPABASE_ANON_KEY ?? process.env.POWERSYNC_SUPABASE_PUBLIC_KEY ?? process.env.SUPABASE_ANON_KEY ?? null;
-  const supabaseSchema = process.env.POWERSYNC_SUPABASE_SCHEMA ?? process.env.SUPABASE_DB_SCHEMA ?? undefined;
+  const supabaseUrl = process.env.SUPABASE_URL ?? null;
+  const supabaseServiceRole = process.env.SUPABASE_SERVICE_ROLE_KEY ?? null;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY ?? null;
+  const supabaseSchema = process.env.SUPABASE_DB_SCHEMA ?? undefined;
   const supabaseWriterDisabled = (process.env.POWERSYNC_DISABLE_SUPABASE_WRITER ?? '').toLowerCase() === 'true';
 
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error(
-      '[powersync-daemon] Supabase URL and anon key are required. Configure POWERSYNC_SUPABASE_URL and POWERSYNC_SUPABASE_ANON_KEY.',
+      '[powersync-daemon] Supabase URL and anon key are required. Configure SUPABASE_URL and SUPABASE_ANON_KEY.',
     );
   }
 

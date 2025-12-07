@@ -531,9 +531,9 @@ function stripPowersyncScheme(remoteUrl) {
 
 function buildStackEnv(statusEnv) {
   const supabaseUrl = (statusEnv.API_URL ?? statusEnv.SUPABASE_URL ?? DEFAULT_SUPABASE_URL).replace(/\/$/, '')
-  const serviceRoleKey = statusEnv.SERVICE_ROLE_KEY ?? process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY ?? 'service-role-placeholder'
-  const anonKey = statusEnv.ANON_KEY ?? process.env.POWERSYNC_SUPABASE_ANON_KEY ?? 'anon-placeholder'
-  const jwtSecret = statusEnv.JWT_SECRET ?? process.env.POWERSYNC_SUPABASE_JWT_SECRET ?? process.env.SUPABASE_JWT_SECRET
+  const serviceRoleKey = statusEnv.SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'service-role-placeholder'
+  const anonKey = statusEnv.ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? 'anon-placeholder'
+  const jwtSecret = statusEnv.JWT_SECRET ?? process.env.SUPABASE_JWT_SECRET
   const jwtSecretBase64 = jwtSecret ? Buffer.from(jwtSecret, 'utf8').toString('base64') : undefined
   const resolvedDatabaseUrl =
     statusEnv.DATABASE_URL ??
@@ -600,8 +600,8 @@ function buildStackEnv(statusEnv) {
 }
 
 async function ensureSupabaseAuthUser(env) {
-  const supabaseUrl = env.supabaseUrl ?? process.env.POWERSYNC_SUPABASE_URL ?? process.env.SUPABASE_URL
-  const serviceRoleKey = env.serviceRoleKey ?? process.env.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY
+  const supabaseUrl = env.supabaseUrl ?? process.env.SUPABASE_URL
+  const serviceRoleKey = env.serviceRoleKey ?? process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceRoleKey) {
     warnLog('[dev:stack] Skipping Supabase auth user provisioning — missing Supabase URL or service-role key.')
     return null
@@ -664,12 +664,12 @@ function buildExportLines(env, authUser) {
     '',
     '# Optional extras for explorer / local tooling',
     `export POWERSYNC_ENDPOINT=${JSON.stringify(env.powersyncEndpoint)}`,
-    `export POWERSYNC_SUPABASE_URL=${JSON.stringify(env.supabaseUrl)}`,
-    `export POWERSYNC_SUPABASE_ANON_KEY=${JSON.stringify(env.anonKey)}`,
-    `export POWERSYNC_SUPABASE_SERVICE_ROLE_KEY=${JSON.stringify(env.serviceRoleKey)}`,
-    `export POWERSYNC_SUPABASE_JWT_SECRET=${JSON.stringify(env.jwtSecret)}`,
-    `export POWERSYNC_SUPABASE_JWT_SECRET_B64=${JSON.stringify(env.jwtSecretBase64)}`,
-    `export POWERSYNC_SUPABASE_DATABASE_URL=${JSON.stringify(env.databaseUrl)}`,
+    `export SUPABASE_URL=${JSON.stringify(env.supabaseUrl)}`,
+    `export SUPABASE_ANON_KEY=${JSON.stringify(env.anonKey)}`,
+    `export SUPABASE_SERVICE_ROLE_KEY=${JSON.stringify(env.serviceRoleKey)}`,
+    `export SUPABASE_JWT_SECRET=${JSON.stringify(env.jwtSecret)}`,
+    `export SUPABASE_JWT_SECRET_B64=${JSON.stringify(env.jwtSecretBase64)}`,
+    `export SUPABASE_DATABASE_URL=${JSON.stringify(env.databaseUrl)}`,
     `export POWERSYNC_DATABASE_URL=${JSON.stringify(env.powersyncDatabaseUrl)}`,
     `export POWERSYNC_STORAGE_URI=${JSON.stringify(env.powersyncStorageUri)}`,
     `export POWERSYNC_PORT=${JSON.stringify(env.powersyncPort)}`,
@@ -686,8 +686,8 @@ function buildExportLines(env, authUser) {
   if (authUser) {
     lines.push(`export POWERGIT_EMAIL=${JSON.stringify(authUser.email)}`)
     lines.push(`export POWERGIT_PASSWORD=${JSON.stringify(authUser.password)}`)
-    lines.push(`export POWERSYNC_SUPABASE_EMAIL=${JSON.stringify(authUser.email)}`)
-    lines.push(`export POWERSYNC_SUPABASE_PASSWORD=${JSON.stringify(authUser.password)}`)
+    lines.push(`export SUPABASE_EMAIL=${JSON.stringify(authUser.email)}`)
+    lines.push(`export SUPABASE_PASSWORD=${JSON.stringify(authUser.password)}`)
     lines.push(`export PSGIT_TEST_SUPABASE_EMAIL=${JSON.stringify(authUser.email)}`)
     lines.push(`export PSGIT_TEST_SUPABASE_PASSWORD=${JSON.stringify(authUser.password)}`)
   }
@@ -826,11 +826,15 @@ async function startStack() {
     POWERSYNC_PORT: env.powersyncPort,
     POWERSYNC_DAEMON_URL: env.daemonEndpoint,
     POWERSYNC_DAEMON_ENDPOINT: env.powersyncEndpoint,
+    SUPABASE_URL: env.supabaseUrl,
+    SUPABASE_ANON_KEY: env.anonKey,
+    SUPABASE_SERVICE_ROLE_KEY: env.serviceRoleKey,
+    SUPABASE_DB_SCHEMA: env.supabaseSchema,
     PS_DATABASE_URL: env.psDatabaseUrl,
     PS_STORAGE_URI: env.psStorageUri,
     PS_PORT: env.psPort,
-    POWERSYNC_SUPABASE_JWT_SECRET: env.jwtSecret,
-    POWERSYNC_SUPABASE_JWT_SECRET_B64: env.jwtSecretBase64,
+    SUPABASE_JWT_SECRET: env.jwtSecret,
+    SUPABASE_JWT_SECRET_B64: env.jwtSecretBase64,
     POWERSYNC_DAEMON_DEVICE_URL: env.daemonDeviceLoginUrl,
     SUPABASE_BIN,
     DOCKER_BIN,
