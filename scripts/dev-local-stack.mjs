@@ -864,8 +864,6 @@ async function startStack() {
     const authEnv = normalizeEnvValues({
       POWERGIT_EMAIL: authUser.email,
       POWERGIT_PASSWORD: authUser.password,
-      POWERSYNC_SUPABASE_EMAIL: authUser.email,
-      POWERSYNC_SUPABASE_PASSWORD: authUser.password,
       PSGIT_TEST_SUPABASE_EMAIL: authUser.email,
       PSGIT_TEST_SUPABASE_PASSWORD: authUser.password,
     })
