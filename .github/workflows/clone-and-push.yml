@@ -36,7 +36,9 @@ jobs:
         run: pnpm --filter @pkg/remote-helper build
 
       - name: Add remote-helper to PATH
-        run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        run: |
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+          echo "$PWD/packages/remote-helper/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Clone target repo
         run: |
