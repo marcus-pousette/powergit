@@ -40,6 +40,16 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
           echo "$PWD/packages/remote-helper/node_modules/.bin" >> "$GITHUB_PATH"
 
+      - name: Verify remote-helper is available
+        run: |
+          if ! command -v git-remote-powersync >/dev/null 2>&1; then
+            echo "git-remote-powersync is missing from PATH. Contents of node_modules/.bin:"
+            ls -l "$PWD/node_modules/.bin" || true
+            ls -l "$PWD/packages/remote-helper/node_modules/.bin" || true
+            exit 1
+          fi
+          git remote -h | head -n 5
+
       - name: Clone target repo
         run: |
           git clone "${{ github.event.inputs.git_url }}" workdir
