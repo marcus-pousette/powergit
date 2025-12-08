@@ -121,3 +121,12 @@ jobs:
           git remote add powersync "powersync::$POWERSYNC_EDGE_BASE_URL/orgs/$POWERSYNC_ORG/repos/$POWERSYNC_REPO"
           git push powersync --all
           git push powersync --tags || true
+
+      - name: Show daemon repo summary
+        run: |
+          echo "Daemon /auth/status:" && curl -sf http://127.0.0.1:5030/auth/status || true
+          echo ""
+          echo "Daemon repo summary:" && curl -sf "http://127.0.0.1:5030/orgs/${{ github.event.inputs.org }}/repos/${{ github.event.inputs.repo }}/summary" || true
+          echo ""
+          echo "Daemon log (tail):"
+          tail -n 200 daemon.log || true
