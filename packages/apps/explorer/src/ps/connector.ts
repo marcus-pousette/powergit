@@ -1,4 +1,5 @@
 import type { PowerSyncBackendConnector, PowerSyncCredentials, AbstractPowerSyncDatabase } from '@powersync/web'
+import { getAccessToken } from './supabase'
 
 interface ConnectorOptions {
   getToken?: () => Promise<string | null>
@@ -45,6 +46,11 @@ export class Connector implements PowerSyncBackendConnector {
       options?.getToken ??
       (async () => {
         if (fallbackToken) return fallbackToken
+        // Fallback to the current Supabase session token (if signed in)
+        const supabaseToken = await getAccessToken().catch(() => null)
+        if (supabaseToken && supabaseToken.trim().length > 0) {
+          return supabaseToken.trim()
+        }
         return null
       })
   }
