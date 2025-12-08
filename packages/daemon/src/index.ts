@@ -908,6 +908,14 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
             `[powersync-daemon] stored pack for ${orgId}/${repoId} (oid: ${result.packOid ?? 'unknown'}, size: ${result.packSize} bytes)`,
           );
         }
+        // Flush Supabase writer so pushes are durable before returning
+        if (supabaseWriter) {
+          try {
+            await supabaseWriter.uploadPending();
+          } catch (flushError) {
+            console.warn('[powersync-daemon] Supabase writer flush failed after push', flushError);
+          }
+        }
         return result;
       } catch (error) {
         console.error(`[powersync-daemon] failed to persist push for ${orgId}/${repoId}`, error);
