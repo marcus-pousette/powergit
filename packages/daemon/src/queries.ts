@@ -90,6 +90,8 @@ export interface PersistPushOptions {
   orgId: string;
   repoId: string;
   updates: PushUpdateRow[];
+  repoUrl?: string;
+  importStatus?: string;
   packOid?: string;
   packStorageKey?: string;
   packSizeBytes?: number;
@@ -180,6 +182,24 @@ export async function persistPush(database: PowerSyncDatabase, options: PersistP
       await applyRefUpdates(tx, orgId, repoId, summary.refs, summary.head);
       await applyCommitUpdates(tx, orgId, repoId, summary.commits);
     }
+
+    const repoKey = `${orgId}/${repoId}`;
+    const repoUrl = typeof options.repoUrl === 'string' ? options.repoUrl.trim() : '';
+    const status = options.importStatus ?? (summary ? 'ready' : 'pushed');
+    await tx.execute('DELETE FROM repositories WHERE id = ?', [repoKey]);
+    await tx.execute(
+      `INSERT INTO repositories (id, org_id, repo_id, repo_url, created_at, updated_at, last_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        repoKey,
+        orgId,
+        repoId,
+        repoUrl || null,
+        createdAt,
+        createdAt,
+        status,
+      ],
+    );
   });
 
   return {
@@ -208,6 +228,8 @@ export async function deleteRepoData(
     await tx.execute('DELETE FROM commits WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
     await tx.execute('DELETE FROM refs WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
     await tx.execute('DELETE FROM objects WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM import_jobs WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
+    await tx.execute('DELETE FROM repositories WHERE org_id = ? AND repo_id = ?', [orgId, repoId]);
   });
 
   return { storageKeys };

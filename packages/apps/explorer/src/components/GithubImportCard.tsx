@@ -1,19 +1,20 @@
 import * as React from 'react'
 import { Link } from '@tanstack/react-router'
+import { eq } from '@tanstack/db'
+import { useLiveQuery } from '@tanstack/react-db'
+import { useCollections } from '@tsdb/collections'
 import type { PowerSyncImportJob } from '@shared/core'
 import {
   getImportMode,
   isGithubActionsImportEnabled,
   isDaemonEnabled,
   requestGithubImport,
-  fetchGithubImportJob,
   type DaemonGithubImportRequest,
 } from '@ps/daemon-client'
+import type { Database } from '@ps/schema'
 import { useTheme } from '../ui/theme-context'
 
 export const REPO_IMPORT_EVENT = '__powergit:repo-imported'
-
-const POLL_INTERVAL_MS = 1_500
 
 type ImportPhase = 'idle' | 'submitting' | 'queued' | 'running' | 'success' | 'error'
 type ImportMode = ReturnType<typeof getImportMode>
@@ -26,44 +27,64 @@ export function GithubImportCard(): React.JSX.Element | null {
   const [status, setStatus] = React.useState<ImportPhase>('idle')
   const [error, setError] = React.useState<string | null>(null)
   const [job, setJob] = React.useState<PowerSyncImportJob | null>(null)
-  const lastAnnouncedJob = React.useRef<string | null>(null)
+  const { import_jobs } = useCollections()
+  type ImportJobRow = Pick<
+    Database['import_jobs'],
+    | 'id'
+    | 'status'
+    | 'error'
+    | 'org_id'
+    | 'repo_id'
+    | 'repo_url'
+    | 'branch'
+    | 'default_branch'
+    | 'workflow_url'
+    | 'updated_at'
+  >
+  const jobId = job?.id ?? ''
+  const { data: importJobRows = [] } = useLiveQuery(
+    (q) =>
+      q
+        .from({ j: import_jobs })
+        .where(({ j }) => eq(j.id, jobId))
+        .select(({ j }) => ({
+          id: j.id,
+          status: j.status,
+          error: j.error,
+          org_id: j.org_id,
+          repo_id: j.repo_id,
+          repo_url: j.repo_url,
+          branch: j.branch,
+          default_branch: j.default_branch,
+          workflow_url: j.workflow_url,
+          updated_at: j.updated_at,
+        })),
+    [import_jobs, jobId],
+  ) as { data: Array<ImportJobRow> }
+  const liveJob = importJobRows[0] ?? null
   const { theme } = useTheme()
   const isDark = theme === 'dark'
-  const workflowUrl = (job as { workflowUrl?: string } | null)?.workflowUrl
+  const workflowUrl =
+    liveJob?.workflow_url ??
+    (job as { workflowUrl?: string } | null)?.workflowUrl
 
   React.useEffect(() => {
-    if (!job) return undefined
-    if (importMode !== 'daemon') return undefined
-    if (job.status === 'success' || job.status === 'error') return undefined
-
-    let cancelled = false
-    const poll = window.setInterval(async () => {
-      try {
-        const next = await fetchGithubImportJob(job.id)
-        if (!cancelled && next) {
-          setJob(next)
-          if (next.status === 'success' || next.status === 'error') {
-            window.clearInterval(poll)
-            setStatus(next.status === 'success' ? 'success' : 'error')
-            if (next.status === 'error') {
-              setError(next.error ?? 'Import failed unexpectedly.')
-            }
-          } else if (next.status === 'queued') {
-            setStatus('queued')
-          } else {
-            setStatus('running')
-          }
-        }
-      } catch (pollError) {
-        console.warn('[Explorer] failed to poll import job', pollError)
-      }
-    }, POLL_INTERVAL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(poll)
+    if (!liveJob) return
+    const nextPhase: ImportPhase =
+      liveJob.status === 'success'
+        ? 'success'
+        : liveJob.status === 'error'
+          ? 'error'
+          : liveJob.status === 'running'
+            ? 'running'
+            : liveJob.status === 'queued'
+              ? 'queued'
+              : status
+    setStatus((prev) => (prev === nextPhase ? prev : nextPhase))
+    if (liveJob.status === 'error') {
+      setError((prev) => prev ?? liveJob.error ?? 'Import failed unexpectedly.')
     }
-  }, [job, importMode])
+  }, [liveJob?.status, liveJob?.error])
 
   if (!daemonAvailable && !actionsImportAvailable) {
     const disabledClasses = isDark
@@ -80,30 +101,15 @@ export function GithubImportCard(): React.JSX.Element | null {
   const derived = React.useMemo(() => deriveSlugs(repoUrl), [repoUrl])
   const isSubmitting = status === 'submitting'
   const showSummary = Boolean(job && derived)
-  const resultOrgId = job?.result?.orgId ?? job?.orgId ?? derived?.orgId ?? null
-  const resultRepoId = job?.result?.repoId ?? job?.repoId ?? derived?.repoId ?? null
-  const resultDefaultBranch = job?.result?.defaultBranch ?? job?.result?.branch ?? job?.branch ?? null
-
-  React.useEffect(() => {
-    if (
-      typeof window === 'undefined' ||
-      !job ||
-      job.status !== 'success' ||
-      !resultOrgId ||
-      !resultRepoId ||
-      lastAnnouncedJob.current === job.id
-    ) {
-      return
-    }
-    lastAnnouncedJob.current = job.id
-    const detail = {
-      orgId: resultOrgId,
-      repoId: resultRepoId,
-      branch: resultDefaultBranch,
-      timestamp: new Date().toISOString(),
-    }
-    window.dispatchEvent(new CustomEvent(REPO_IMPORT_EVENT, { detail }))
-  }, [job, resultDefaultBranch, resultOrgId, resultRepoId])
+  const resultOrgId = liveJob?.org_id ?? job?.result?.orgId ?? job?.orgId ?? derived?.orgId ?? null
+  const resultRepoId = liveJob?.repo_id ?? job?.result?.repoId ?? job?.repoId ?? derived?.repoId ?? null
+  const resultDefaultBranch =
+    liveJob?.default_branch ??
+    liveJob?.branch ??
+    job?.result?.defaultBranch ??
+    job?.result?.branch ??
+    job?.branch ??
+    null
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()

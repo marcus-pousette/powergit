@@ -241,4 +241,118 @@ describe('SupabaseWriter', () => {
       updated_at: '2024-01-02T00:00:00Z',
     });
   });
+
+  it('coalesces delete then put for the same row id (last op wins)', async () => {
+    const id = 'demo/infra/refs/heads/main';
+    const deleteFirst = createEntry({
+      table: 'refs',
+      op: UpdateType.DELETE,
+      previousValues: {
+        id,
+        org_id: 'demo',
+        repo_id: 'infra',
+        name: 'refs/heads/main',
+        target_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        updated_at: '2024-01-01T00:00:00Z',
+      },
+    });
+
+    const putAfter = createEntry({
+      table: 'refs',
+      op: UpdateType.PUT,
+      opData: {
+        id,
+        org_id: 'demo',
+        repo_id: 'infra',
+        name: 'refs/heads/main',
+        target_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        updated_at: '2024-01-02T00:00:00Z',
+      },
+    });
+
+    const { tx, complete } = createTransaction([deleteFirst, putAfter]);
+    const database = new FakeDatabase([tx]);
+
+    const writer = new SupabaseWriter({
+      database: database as unknown as PowerSyncDatabase,
+      client: currentSupabaseStub as unknown as SupabaseClient,
+      pollIntervalMs: 5,
+    });
+
+    writer.start();
+
+    await waitForExpect(() => {
+      expect(complete).toHaveBeenCalledTimes(1);
+    });
+
+    await writer.stop();
+
+    expect(currentSupabaseStub.upsertCalls).toHaveLength(1);
+    expect(currentSupabaseStub.upsertCalls[0]).toMatchObject({
+      table: 'refs',
+      rows: [
+        expect.objectContaining({
+          id,
+          target_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        }),
+      ],
+    });
+    expect(currentSupabaseStub.deleteCalls).toHaveLength(0);
+  });
+
+  it('coalesces put then delete for the same row id (last op wins)', async () => {
+    const id = 'demo/infra/refs/heads/main';
+    const putFirst = createEntry({
+      table: 'refs',
+      op: UpdateType.PUT,
+      opData: {
+        id,
+        org_id: 'demo',
+        repo_id: 'infra',
+        name: 'refs/heads/main',
+        target_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        updated_at: '2024-01-02T00:00:00Z',
+      },
+    });
+
+    const deleteAfter = createEntry({
+      table: 'refs',
+      op: UpdateType.DELETE,
+      previousValues: {
+        id,
+        org_id: 'demo',
+        repo_id: 'infra',
+        name: 'refs/heads/main',
+        target_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        updated_at: '2024-01-02T00:00:00Z',
+      },
+    });
+
+    const { tx, complete } = createTransaction([putFirst, deleteAfter]);
+    const database = new FakeDatabase([tx]);
+
+    const writer = new SupabaseWriter({
+      database: database as unknown as PowerSyncDatabase,
+      client: currentSupabaseStub as unknown as SupabaseClient,
+      pollIntervalMs: 5,
+    });
+
+    writer.start();
+
+    await waitForExpect(() => {
+      expect(complete).toHaveBeenCalledTimes(1);
+    });
+
+    await writer.stop();
+
+    expect(currentSupabaseStub.upsertCalls).toHaveLength(0);
+    expect(currentSupabaseStub.deleteCalls).toHaveLength(1);
+    expect(currentSupabaseStub.deleteCalls[0]).toEqual({
+      table: 'refs',
+      filters: {
+        column: 'id',
+        values: [id],
+      },
+    });
+  });
 });

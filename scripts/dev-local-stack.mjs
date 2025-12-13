@@ -33,6 +33,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const repoRoot = resolve(__dirname, '..')
 const requireForScript = createRequire(import.meta.url)
+const SUPABASE_WORKDIR_ARGS = ['--workdir', repoRoot]
 
 function resolveSupabaseBinFromWorkspace() {
   const candidates = ['@supabase/cli', 'supabase']
@@ -267,7 +268,7 @@ async function startEdgeFunctions() {
     }
   }
 
-  const args = ['functions', 'serve', '--env-file', FUNCTIONS_ENV_FILE, '--no-verify-jwt']
+  const args = [...SUPABASE_WORKDIR_ARGS, 'functions', 'serve', '--env-file', FUNCTIONS_ENV_FILE, '--no-verify-jwt']
   if (!existsSync(FUNCTIONS_ENV_FILE)) {
     warnLog(`[dev:stack] Supabase functions env file missing at ${FUNCTIONS_ENV_FILE}; skipping Edge serve.`)
     return
@@ -490,7 +491,7 @@ async function supabaseStatusEnv() {
 
   try {
     const { stdout } = await new Promise((resolvePromise, rejectPromise) => {
-      execFile(SUPABASE_BIN, ['status', '--output', 'env'], { cwd: repoRoot }, (error, out, err) => {
+      execFile(SUPABASE_BIN, [...SUPABASE_WORKDIR_ARGS, 'status', '--output', 'env'], { cwd: repoRoot }, (error, out, err) => {
         if (error) {
           rejectPromise(Object.assign(error, { stderr: err }))
         } else {
@@ -816,7 +817,7 @@ async function applySupabaseSchema(env) {
 }
 
 async function startStack() {
-  await runCommand(SUPABASE_BIN, ['start', '--ignore-health-check'])
+  await runCommand(SUPABASE_BIN, [...SUPABASE_WORKDIR_ARGS, 'start', '--ignore-health-check'])
   const statusEnv = await supabaseStatusEnv()
   const env = buildStackEnv(statusEnv)
 
@@ -922,7 +923,7 @@ async function stopStack() {
     warnLog('[dev:stack] Failed to stop Supabase Edge Functions serve', error?.message ?? error)
   })
   await runCommand(DOCKER_BIN, ['compose', '-f', 'supabase/docker-compose.powersync.yml', 'down'])
-  await runCommand(SUPABASE_BIN, ['stop'])
+  await runCommand(SUPABASE_BIN, [...SUPABASE_WORKDIR_ARGS, 'stop'])
   infoLog('✅ Supabase + PowerSync stack stopped.')
 }
 

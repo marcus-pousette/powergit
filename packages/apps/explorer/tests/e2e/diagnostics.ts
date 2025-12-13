@@ -20,36 +20,81 @@ function formatLocation(url?: string, lineNumber?: number, columnNumber?: number
   return parts.join(':')
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
+}
+
+async function isHttpReachable(url: string, timeoutMs: number) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    return res.ok || (res.status >= 300 && res.status < 500)
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 export const test = base.extend({
   page: async ({ page }, use, testInfo) => {
     const consoleLines: string[] = []
     const pageErrors: string[] = []
     let fatalError: Error | null = null
-    let rejectFatal: ((error: Error) => void) | null = null
+    let resolveFatal: (() => void) | null = null
+    let active = true
+    let viteLostConnectionCheckInFlight = false
 
     const fatalConsolePatterns: Array<{ regex: RegExp; message: string }> = [
       {
         regex: /ERR_CONNECTION_REFUSED/i,
         message: 'Browser failed to reach the dev server (ERR_CONNECTION_REFUSED)',
       },
-      {
-        regex: /server connection lost/i,
-        message: 'Vite dev server reported a lost connection; it likely crashed or restarted',
-      },
     ]
 
-    const fatalPromise = new Promise<never>((_, reject) => {
-      rejectFatal = reject
+    const fatalPromise = new Promise<void>((resolve) => {
+      resolveFatal = resolve
     })
 
     const triggerFatal = (reason: string, detail: string) => {
-      if (fatalError) return
+      if (!active || fatalError) return
       fatalError = new Error(`${reason}. Latest message: ${detail}`)
-      if (rejectFatal) {
-        rejectFatal(fatalError)
-        rejectFatal = null
+      if (resolveFatal) {
+        resolveFatal()
+        resolveFatal = null
       }
       void page.close().catch(() => undefined)
+    }
+
+    const checkViteConnectionLoss = async (detail: string) => {
+      if (viteLostConnectionCheckInFlight) return
+      viteLostConnectionCheckInFlight = true
+      try {
+        const pageUrl = page.url()
+        if (!pageUrl.startsWith('http')) return
+        const origin = new URL(pageUrl).origin
+
+        const deadline = Date.now() + 15_000
+        while (active && Date.now() < deadline) {
+          if (await isHttpReachable(origin, 1_500)) {
+            return
+          }
+          await sleep(500)
+        }
+
+        triggerFatal(
+          'Vite dev server reported a lost connection and remained unreachable',
+          detail,
+        )
+      } finally {
+        viteLostConnectionCheckInFlight = false
+      }
     }
 
     const handleConsole = (msg: ConsoleMessage) => {
@@ -66,6 +111,9 @@ export const test = base.extend({
           triggerFatal(pattern.message, formatted)
           break
         }
+      }
+      if (/server connection lost/i.test(text)) {
+        void checkViteConnectionLoss(formatted)
       }
       // Always surface the message in the worker output for quick diagnosis
       console.log(formatted)
@@ -94,6 +142,7 @@ export const test = base.extend({
       }
       throw error
     } finally {
+      active = false
       page.off('console', handleConsole)
       page.off('pageerror', handlePageError)
 

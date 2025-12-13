@@ -127,3 +127,73 @@ create unique index if not exists file_changes_commit_path_idx on public.file_ch
 
 create index if not exists objects_recent_idx on public.objects (org_id, repo_id, created_at desc);
 create unique index if not exists objects_oid_idx on public.objects (org_id, repo_id, pack_oid);
+
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'repositories'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.repositories cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.repositories cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.repositories (
+  id text primary key,
+  org_id text not null,
+  repo_id text not null,
+  repo_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  default_branch text,
+  last_status text,
+  last_import_job_id text
+);
+
+do $$
+declare relkind char;
+begin
+  select c.relkind
+    into relkind
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'import_jobs'
+  limit 1;
+
+  if relkind = 'v' or relkind = 'm' then
+    execute 'drop view if exists public.import_jobs cascade';
+  elsif relkind = 'r' or relkind = 'p' then
+    execute 'drop table if exists public.import_jobs cascade';
+  end if;
+end
+$$;
+
+create table if not exists public.import_jobs (
+  id text primary key,
+  org_id text not null,
+  repo_id text not null,
+  repo_url text not null,
+  status text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  branch text,
+  default_branch text,
+  error text,
+  workflow_url text,
+  source text
+);
+
+create unique index if not exists repositories_org_repo_idx on public.repositories (org_id, repo_id);
+create index if not exists repositories_updated_idx on public.repositories (updated_at desc);
+
+create index if not exists import_jobs_org_repo_idx on public.import_jobs (org_id, repo_id);
+create index if not exists import_jobs_status_idx on public.import_jobs (status);
+create index if not exists import_jobs_updated_idx on public.import_jobs (updated_at desc);

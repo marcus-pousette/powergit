@@ -65,6 +65,42 @@ const rawPowerSyncSchemaSpec = {
       pack_oid: ['pack_oid'],
     },
   },
+  repositories: {
+    columns: {
+      org_id: 'text',
+      repo_id: 'text',
+      repo_url: 'text',
+      created_at: 'text',
+      updated_at: 'text',
+      default_branch: 'text',
+      last_status: 'text',
+      last_import_job_id: 'text',
+    },
+    indexes: {
+      org_repo: ['org_id', 'repo_id'],
+      updated: ['updated_at'],
+    },
+  },
+  import_jobs: {
+    columns: {
+      org_id: 'text',
+      repo_id: 'text',
+      repo_url: 'text',
+      status: 'text',
+      created_at: 'text',
+      updated_at: 'text',
+      branch: 'text',
+      default_branch: 'text',
+      error: 'text',
+      workflow_url: 'text',
+      source: 'text',
+    },
+    indexes: {
+      org_repo: ['org_id', 'repo_id'],
+      status: ['status'],
+      updated: ['updated_at'],
+    },
+  },
 } as const
 
 const assertPowerSyncSchemaSpec = <TSpec extends PowerSyncSchemaSpec>(spec: TSpec) => spec

@@ -63,6 +63,16 @@ export class ImportValidationError extends Error {}
 export interface GithubImportManagerOptions {
   daemonBaseUrl: string;
   subscribeStreams: (targets: StreamSubscriptionTarget[]) => Promise<void> | void;
+  recordImportJob?: (job: PowerSyncImportJob) => Promise<void> | void;
+  upsertRepository?: (payload: {
+    orgId: string;
+    repoId: string;
+    repoUrl?: string | null;
+    status?: string | null;
+    defaultBranch?: string | null;
+    jobId?: string | null;
+    updatedAt?: string | null;
+  }) => Promise<void> | void;
 }
 
 export class GithubImportManager {
@@ -92,6 +102,8 @@ export class GithubImportManager {
       result: null,
     };
     this.jobs.set(job.id, job);
+    this.recordRepository(job, { status: 'queued', updatedAt: now });
+    this.recordJob(job);
     this.addLog(job, 'info', `Queued import for ${normalized.owner}/${normalized.repo}`);
     void this.processJob(job, normalized);
     return cloneJob(job);
@@ -116,6 +128,7 @@ export class GithubImportManager {
 
     try {
       this.setStatus(job, 'running');
+      this.recordRepository(job, { status: 'running' });
       workspaceDir = await mkdtemp(join(tmpdir(), 'powersync-import-'));
       repoDir = join(workspaceDir, 'repo');
 
@@ -151,12 +164,18 @@ export class GithubImportManager {
         branch: request.branch,
         defaultBranch,
       };
+      this.recordRepository(job, {
+        status: 'success',
+        defaultBranch,
+        updatedAt: new Date().toISOString(),
+      });
       this.addLog(job, 'info', 'Import completed successfully');
       this.setStatus(job, 'success');
     } catch (error) {
       const message = toErrorMessage(error);
       job.error = message;
       this.addLog(job, 'error', message);
+      this.recordRepository(job, { status: 'error' });
       this.setStatus(job, 'error');
     } finally {
       await this.runCleanup(job, workspaceDir);
@@ -237,6 +256,43 @@ export class GithubImportManager {
 
   private touch(job: PowerSyncImportJob): void {
     job.updatedAt = new Date().toISOString();
+    this.recordJob(job);
+  }
+
+  private recordJob(job: PowerSyncImportJob): void {
+    const recorder = this.options.recordImportJob;
+    if (!recorder) return;
+    try {
+      void Promise.resolve(recorder(cloneJob(job))).catch((error) => {
+        console.warn('[powersync-daemon] failed to record import job', error);
+      });
+    } catch (error) {
+      console.warn('[powersync-daemon] failed to record import job', error);
+    }
+  }
+
+  private recordRepository(
+    job: PowerSyncImportJob,
+    overrides: { status?: string | null; defaultBranch?: string | null; updatedAt?: string | null } = {},
+  ): void {
+    const recorder = this.options.upsertRepository;
+    if (!recorder) return;
+    const payload = {
+      orgId: job.orgId,
+      repoId: job.repoId,
+      repoUrl: job.repoUrl ?? null,
+      status: overrides.status ?? job.status ?? null,
+      defaultBranch: overrides.defaultBranch ?? job.result?.defaultBranch ?? null,
+      jobId: job.id,
+      updatedAt: overrides.updatedAt ?? job.updatedAt ?? null,
+    };
+    try {
+      void Promise.resolve(recorder(payload)).catch((error) => {
+        console.warn('[powersync-daemon] failed to record repository', error);
+      });
+    } catch (error) {
+      console.warn('[powersync-daemon] failed to record repository', error);
+    }
   }
 }
 

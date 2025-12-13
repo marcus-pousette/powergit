@@ -557,11 +557,105 @@ export async function startDaemon(options: ResolveDaemonConfigOptions = {}): Pro
   database = databaseInstance;
   const subscriptionManager = new StreamSubscriptionManager(databaseInstance);
   const daemonBaseUrl = `http://127.0.0.1:${config.port}`;
+  const recordImportJob = async (job: import('@shared/core').PowerSyncImportJob) => {
+    const now = job.updatedAt ?? new Date().toISOString();
+    const repoKey = `${job.orgId}/${job.repoId}`;
+    await databaseInstance.writeTransaction(async (tx) => {
+      await tx.execute('DELETE FROM import_jobs WHERE id = ?', [job.id]);
+      await tx.execute(
+        `INSERT INTO import_jobs (
+           id, org_id, repo_id, repo_url, status, created_at, updated_at,
+           branch, default_branch, error, workflow_url, source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          job.id,
+          job.orgId,
+          job.repoId,
+          job.repoUrl,
+          job.status,
+          job.createdAt ?? now,
+          now,
+          job.branch ?? null,
+          job.result?.defaultBranch ?? null,
+          job.error ?? null,
+          null,
+          'daemon',
+        ],
+      );
+      await tx.execute('DELETE FROM repositories WHERE id = ?', [repoKey]);
+      await tx.execute(
+        `INSERT INTO repositories (
+           id, org_id, repo_id, repo_url, created_at, updated_at, last_status, last_import_job_id, default_branch
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          repoKey,
+          job.orgId,
+          job.repoId,
+          job.repoUrl,
+          job.createdAt ?? now,
+          now,
+          job.status,
+          job.id,
+          job.result?.defaultBranch ?? null,
+        ],
+      );
+    });
+  };
+
+  const upsertRepository = async (payload: {
+    orgId: string;
+    repoId: string;
+    repoUrl?: string | null;
+    status?: string | null;
+    defaultBranch?: string | null;
+    jobId?: string | null;
+    updatedAt?: string | null;
+  }) => {
+    const now = payload.updatedAt ?? new Date().toISOString();
+    const repoKey = `${payload.orgId}/${payload.repoId}`;
+    const existing = await databaseInstance.getOptional<{
+      repo_url?: string | null;
+      last_status?: string | null;
+      last_import_job_id?: string | null;
+      default_branch?: string | null;
+      created_at?: string | null;
+    }>(
+      `SELECT repo_url, last_status, last_import_job_id, default_branch, created_at
+       FROM repositories WHERE id = ?`,
+      [repoKey],
+    );
+    const repoUrl = payload.repoUrl ?? existing?.repo_url ?? null;
+    const lastStatus = payload.status ?? existing?.last_status ?? null;
+    const lastImportJobId = payload.jobId ?? existing?.last_import_job_id ?? null;
+    const defaultBranch = payload.defaultBranch ?? existing?.default_branch ?? null;
+    const createdAt = existing?.created_at ?? now;
+    await databaseInstance.writeTransaction(async (tx) => {
+      await tx.execute('DELETE FROM repositories WHERE id = ?', [repoKey]);
+      await tx.execute(
+        `INSERT INTO repositories (
+           id, org_id, repo_id, repo_url, created_at, updated_at, last_status, last_import_job_id, default_branch
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          repoKey,
+          payload.orgId,
+          payload.repoId,
+          repoUrl,
+          createdAt,
+          now,
+          lastStatus,
+          lastImportJobId,
+          defaultBranch,
+        ],
+      );
+    });
+  };
   const importManager = new GithubImportManager({
     daemonBaseUrl,
     subscribeStreams: async (targets) => {
       await subscriptionManager.subscribe(targets);
     },
+    recordImportJob,
+    upsertRepository,
   });
   if (!supabaseWriterDisabled) {
     if (!supabaseUrl) {

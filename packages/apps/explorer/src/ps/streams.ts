@@ -67,16 +67,34 @@ async function subscribeToStreams(ps: PowerSyncDatabase, targets: readonly Strea
   let lastError: unknown = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await ps.waitForReady().catch(() => undefined)
-    const subscriptions: SyncStreamSubscription[] = []
+    let subscriptions: SyncStreamSubscription[] = []
     try {
-      for (const target of targets) {
-        const stream = ps.syncStream(target.id, target.params ?? undefined)
-        const subscription = await stream.subscribe()
-        subscriptions.push(subscription)
-        if (import.meta.env.DEV) {
-          console.debug('[PowerSync][streams] subscribed', target.id, target.params ?? null)
-        }
+      const results = await Promise.allSettled(
+        targets.map(async (target) => {
+          const stream = ps.syncStream(target.id, target.params ?? undefined)
+          const subscription = await stream.subscribe()
+          if (import.meta.env.DEV) {
+            console.debug('[PowerSync][streams] subscribed', target.id, target.params ?? null)
+          }
+          return subscription
+        }),
+      )
+
+      const rejected = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      )
+
+      subscriptions = results
+        .filter((result): result is PromiseFulfilledResult<SyncStreamSubscription> => result.status === 'fulfilled')
+        .map((result) => result.value)
+
+      if (rejected) {
+        const reason = rejected.reason
+        subscriptions.forEach((subscription) => subscription.unsubscribe())
+        subscriptions = []
+        throw reason
       }
+
       return subscriptions
     } catch (error) {
       subscriptions.forEach((subscription) => subscription.unsubscribe())

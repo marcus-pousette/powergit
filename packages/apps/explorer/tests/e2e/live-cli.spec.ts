@@ -229,7 +229,14 @@ async function waitForPowerSyncConnected(page: Page, timeoutMs: number, interval
   )
 }
 
-test.describe('CLI-seeded repo (live PowerSync)', () => {
+hydrateProfileEnv()
+const missingLiveEnv = REQUIRED_ENV_VARS.filter((name) => {
+  const value = process.env[name]
+  return !value || value.trim().length === 0
+})
+const describeLive = missingLiveEnv.length > 0 ? test.describe.skip : test.describe
+
+describeLive('CLI-seeded repo (live PowerSync)', () => {
   let supabaseEmail: string
   let supabasePassword: string
   let daemonBaseUrl: string
@@ -251,8 +258,6 @@ test.describe('CLI-seeded repo (live PowerSync)', () => {
   })
 
   test.beforeAll(async () => {
-    hydrateProfileEnv()
-    resetDaemonSession()
     REQUIRED_ENV_VARS.forEach(requireEnv)
 
     supabaseEmail = requireEnv('SUPABASE_EMAIL')
@@ -264,7 +269,6 @@ test.describe('CLI-seeded repo (live PowerSync)', () => {
     orgId = parsed.org
     repoId = parsed.repo
 
-    runCliCommand(['login', '--guest'], 'authenticate daemon (guest)')
     await waitForDaemonReady(daemonBaseUrl, WAIT_TIMEOUT_MS)
 
     runCliCommand(['demo-seed'], 'seed demo repository')

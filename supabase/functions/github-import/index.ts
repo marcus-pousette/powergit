@@ -89,6 +89,7 @@ serve(async (req: Request) => {
       git_url: repoUrl,
       org: orgId,
       repo: repoId,
+      job_id: crypto.randomUUID(),
       ...(edgeBaseUrl ? { edge_base_url: edgeBaseUrl } : {}),
     },
   }
@@ -120,8 +121,9 @@ serve(async (req: Request) => {
 
   const now = new Date().toISOString()
   const workflowUrl = buildWorkflowUrl(owner, repo, workflowFile)
+  const dispatchedJobId = (dispatchBody.inputs as { job_id?: string }).job_id ?? crypto.randomUUID()
   const job: PowerSyncImportJob = {
-    id: crypto.randomUUID(),
+    id: dispatchedJobId,
     status: 'queued',
     createdAt: now,
     updatedAt: now,

@@ -3,6 +3,9 @@ name: Clone and Push
 on:
   workflow_dispatch:
     inputs:
+      job_id:
+        description: "Import job id (for explorer status)"
+        required: false
       git_url:
         description: "Git repository URL to clone"
         required: true
@@ -108,6 +111,45 @@ jobs:
             sleep 1
           done
 
+      - name: Record import job running
+        if: ${{ github.event.inputs.job_id != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.POWERSYNC_SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_ANON_KEY || secrets.POWERSYNC_SUPABASE_ANON_KEY }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          ORG_ID: ${{ github.event.inputs.org }}
+          REPO_ID: ${{ github.event.inputs.repo }}
+          REPO_URL: ${{ github.event.inputs.git_url }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node - <<'EOF'
+          const { createClient } = require('@supabase/supabase-js')
+          const required = ['SUPABASE_URL','SUPABASE_KEY','JOB_ID','ORG_ID','REPO_ID','REPO_URL']
+          for (const k of required) {
+            if (!process.env[k] || !process.env[k].trim()) throw new Error(`Missing env ${k}`)
+          }
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+          const now = new Date().toISOString()
+          const payload = {
+            id: process.env.JOB_ID,
+            org_id: process.env.ORG_ID,
+            repo_id: process.env.REPO_ID,
+            repo_url: process.env.REPO_URL,
+            status: 'running',
+            created_at: now,
+            updated_at: now,
+            source: 'actions',
+            workflow_url: process.env.WORKFLOW_URL ?? null,
+          }
+          ;(async () => {
+            const { error } = await supabase.from('import_jobs').upsert(payload, { onConflict: 'id' })
+            if (error) throw error
+          })().catch((err) => {
+            console.error('Failed to record import job running', err)
+            process.exit(1)
+          })
+          EOF
+
       - name: Clone target repo
         run: |
           git clone "${{ github.event.inputs.git_url }}" workdir
@@ -200,4 +242,31 @@ jobs:
             console.error(String(err?.message || err));
             process.exit(1);
           });
+          EOF
+
+      - name: Record import job result
+        if: ${{ always() && github.event.inputs.job_id != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.POWERSYNC_SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.POWERSYNC_SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_ANON_KEY || secrets.POWERSYNC_SUPABASE_ANON_KEY }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          WORKFLOW_STATUS: ${{ job.status }}
+        run: |
+          node - <<'EOF'
+          const { createClient } = require('@supabase/supabase-js')
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+          const now = new Date().toISOString()
+          const status = process.env.WORKFLOW_STATUS === 'success' ? 'success' : 'error'
+          const update = {
+            status,
+            updated_at: now,
+            error: status === 'error' ? 'GitHub Actions import failed' : null,
+          }
+          ;(async () => {
+            const { error } = await supabase.from('import_jobs').update(update).eq('id', process.env.JOB_ID)
+            if (error) throw error
+          })().catch((err) => {
+            console.error('Failed to record import job result', err)
+            process.exit(1)
+          })
           EOF

@@ -21,6 +21,8 @@ const TABLES: Record<string, TableMetadata> = {
   commits: { table: 'commits', conflictTarget: 'id' },
   file_changes: { table: 'file_changes', conflictTarget: 'id' },
   objects: { table: 'objects', conflictTarget: 'id' },
+  repositories: { table: 'repositories', conflictTarget: 'id' },
+  import_jobs: { table: 'import_jobs', conflictTarget: 'id' },
 };
 
 export class SupabaseWriter {
@@ -165,10 +167,15 @@ export class SupabaseWriter {
         const row = this.buildRow(entry);
         if (!row) continue;
 
+        const rowId = String(row.id);
         if (entry.op === 'DELETE') {
-          deletes.set(String(row.id), row);
+          // PowerSync tables frequently update by doing a DELETE then INSERT for the same id.
+          // Coalesce operations so the last operation for a given id wins.
+          upserts.delete(rowId);
+          deletes.set(rowId, row);
         } else {
-          upserts.set(String(row.id), row);
+          deletes.delete(rowId);
+          upserts.set(rowId, row);
         }
       }
 

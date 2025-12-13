@@ -130,7 +130,7 @@ test.describe('Explorer repo lists', () => {
 
     await expect(page.getByTestId('repo-toolbar')).toBeVisible()
     await expect(page.getByTestId('branch-selector')).toBeVisible()
-    await expect(page.getByTestId('file-explorer-tree')).toContainText('Repository content is syncing')
+    await expect(page.getByTestId('file-explorer-tree')).toContainText('Waiting for pack metadata from the daemon')
     await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
   })
 
@@ -187,7 +187,7 @@ test.describe('Explorer repo lists', () => {
     )
 
     const tree = page.getByTestId('file-explorer-tree')
-    await expect(tree).toContainText('Repository content is syncing')
+    await expect(tree).toContainText('Waiting for pack metadata from the daemon')
     await expect(page.getByTestId('file-viewer-placeholder')).toContainText('Select a file')
   })
 

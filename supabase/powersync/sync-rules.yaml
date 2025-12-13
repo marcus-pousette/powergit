@@ -41,3 +41,15 @@ streams:
         AND subscription.parameter('repo_id') IS NOT NULL
         AND org_id = subscription.parameter('org_id')
         AND repo_id = subscription.parameter('repo_id')
+
+  repositories:
+    auto_subscribe: true
+    query: |
+      SELECT id, org_id, repo_id, repo_url, created_at, updated_at, default_branch, last_status, last_import_job_id
+      FROM repositories
+
+  import_jobs:
+    auto_subscribe: true
+    query: |
+      SELECT id, org_id, repo_id, repo_url, status, created_at, updated_at, branch, default_branch, error, workflow_url, source
+      FROM import_jobs

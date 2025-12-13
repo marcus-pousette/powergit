@@ -50,7 +50,7 @@ const typedTables = Object.fromEntries(
 ) as SchemaTables
 
 export const AppSchema = appSchema
-export const { refs, commits, file_changes, objects } = typedTables
+export const { refs, commits, file_changes, objects, repositories, import_jobs } = typedTables
 
 type ColumnValueMap = {
   text: string | null

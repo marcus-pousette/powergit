@@ -3,7 +3,7 @@ import * as React from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useLiveQuery } from '@tanstack/react-db'
 import { useCollections } from '@tsdb/collections'
-import { GithubImportCard, REPO_IMPORT_EVENT } from '../components/GithubImportCard'
+import { GithubImportCard } from '../components/GithubImportCard'
 import type { Database } from '@ps/schema'
 import { useTheme } from '../ui/theme-context'
 import { deleteDaemonRepo, isDaemonPreferred } from '@ps/daemon-client'
@@ -18,18 +18,13 @@ type RepoSummary = {
   repoId: string
   branches: Set<string>
   updatedAt: string | null
-}
-
-type ImportEventDetail = {
-  orgId: string
-  repoId: string
-  branch?: string | null
-  timestamp?: string
+  status?: string | null
+  defaultBranch?: string | null
 }
 
 export function Home() {
   const { theme } = useTheme()
-  const { refs } = useCollections()
+  const { refs, repositories } = useCollections()
   const preferDaemon = React.useMemo(() => isDaemonPreferred(), [])
   type RefRow = Pick<Database['refs'], 'org_id' | 'repo_id' | 'name' | 'updated_at'>
   const { data: refRows = [] } = useLiveQuery(
@@ -45,19 +40,50 @@ export function Home() {
     [refs],
   ) as { data: Array<RefRow> }
 
-  const repoSummaries = React.useMemo(() => {
-    const map = new Map<
-      string,
-      RepoSummary
-    >()
+  const [deletingRepos, setDeletingRepos] = React.useState<Record<string, boolean>>({})
 
+  type RepoRow = Pick<
+    Database['repositories'],
+    'org_id' | 'repo_id' | 'repo_url' | 'created_at' | 'updated_at' | 'default_branch' | 'last_status'
+  >
+  const { data: repoRows = [] } = useLiveQuery(
+    (q) =>
+      q
+        .from({ repo: repositories })
+        .select(({ repo }) => ({
+          org_id: repo.org_id,
+          repo_id: repo.repo_id,
+          repo_url: repo.repo_url,
+          created_at: repo.created_at,
+          updated_at: repo.updated_at,
+          default_branch: repo.default_branch,
+          last_status: repo.last_status,
+        })),
+    [repositories],
+  ) as { data: Array<RepoRow> }
+
+  const combinedSummaries = React.useMemo(() => {
+    const map = new Map<string, RepoSummary>()
+    for (const row of repoRows) {
+      const orgId = row.org_id?.trim()
+      const repoId = row.repo_id?.trim()
+      if (!orgId || !repoId) continue
+      const key = `${orgId}/${repoId}`
+      map.set(key, {
+        orgId,
+        repoId,
+        branches: new Set<string>(),
+        updatedAt: row.updated_at ?? row.created_at ?? null,
+        status: row.last_status ?? null,
+        defaultBranch: row.default_branch ?? null,
+      })
+    }
     for (const row of refRows) {
       const orgId = row.org_id?.trim()
       const repoId = row.repo_id?.trim()
       if (!orgId || !repoId) continue
       const key = `${orgId}/${repoId}`
-      const entry =
-        map.get(key) ?? { orgId, repoId, branches: new Set<string>(), updatedAt: null }
+      const entry = map.get(key) ?? { orgId, repoId, branches: new Set<string>(), updatedAt: null }
       if (row.name) {
         entry.branches.add(row.name)
       }
@@ -68,61 +94,6 @@ export function Home() {
       }
       map.set(key, entry)
     }
-
-    return Array.from(map.values())
-  }, [refRows])
-
-  const [pendingImports, setPendingImports] = React.useState<Record<string, RepoSummary>>({})
-  const [deletingRepos, setDeletingRepos] = React.useState<Record<string, boolean>>({})
-
-  React.useEffect(() => {
-    if (typeof window === 'undefined') return
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<ImportEventDetail>).detail
-      if (!detail?.orgId || !detail?.repoId) return
-      setPendingImports((prev) => {
-        const key = `${detail.orgId}/${detail.repoId}`
-        if (prev[key]) return prev
-        const next = { ...prev }
-        next[key] = {
-          orgId: detail.orgId,
-          repoId: detail.repoId,
-          branches: new Set(detail.branch ? [detail.branch] : []),
-          updatedAt: detail.timestamp ?? new Date().toISOString(),
-        }
-        return next
-      })
-    }
-    window.addEventListener(REPO_IMPORT_EVENT, handler as EventListener)
-    return () => window.removeEventListener(REPO_IMPORT_EVENT, handler as EventListener)
-  }, [])
-
-  React.useEffect(() => {
-    if (repoSummaries.length === 0) return
-    setPendingImports((prev) => {
-      const next = { ...prev }
-      let dirty = false
-      for (const summary of repoSummaries) {
-        const key = `${summary.orgId}/${summary.repoId}`
-        if (next[key]) {
-          delete next[key]
-          dirty = true
-        }
-      }
-      return dirty ? next : prev
-    })
-  }, [repoSummaries])
-
-  const combinedSummaries = React.useMemo(() => {
-    const map = new Map<string, RepoSummary>()
-    for (const summary of repoSummaries) {
-      map.set(`${summary.orgId}/${summary.repoId}`, summary)
-    }
-    for (const [key, pending] of Object.entries(pendingImports)) {
-      if (!map.has(key)) {
-        map.set(key, pending)
-      }
-    }
     return Array.from(map.values()).sort((a, b) => {
       const aTime = a.updatedAt ? Date.parse(a.updatedAt) : 0
       const bTime = b.updatedAt ? Date.parse(b.updatedAt) : 0
@@ -131,7 +102,7 @@ export function Home() {
       }
       return bTime - aTime
     })
-  }, [pendingImports, repoSummaries])
+  }, [repoRows, refRows])
 
   const formatTimestamp = React.useCallback((iso: string | null | undefined) => {
     if (!iso) return '–'
@@ -175,12 +146,6 @@ export function Home() {
         }
         return
       }
-      setPendingImports((prev) => {
-        if (!prev[repoKey]) return prev
-        const next = { ...prev }
-        delete next[repoKey]
-        return next
-      })
     },
     [preferDaemon],
   )
@@ -226,6 +191,7 @@ export function Home() {
                     </div>
                     <div className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                       {branchCount} branch{branchCount === 1 ? '' : 'es'} · Updated {formatTimestamp(repo.updatedAt)}
+                      {repo.status && repo.status !== 'ready' ? ` · ${repo.status}` : ''}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

@@ -62,6 +62,26 @@ async function waitForStackReady(timeoutMs: number): Promise<void> {
   throw new Error(`PowerSync dev stack did not become ready within ${timeoutMs}ms (host ${STACK_HOST}, port ${STACK_PORT})`)
 }
 
+async function waitForDaemonReady(baseUrl: string, timeoutMs: number): Promise<void> {
+  const normalized = baseUrl.replace(/\/+$/, '')
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${normalized}/auth/status`)
+      if (res.ok) {
+        const payload = (await res.json()) as { status?: string }
+        if (payload?.status === 'ready') {
+          return
+        }
+      }
+    } catch {
+      // ignore while polling
+    }
+    await delay(TCP_RETRY_DELAY_MS)
+  }
+  throw new Error(`Daemon at ${normalized} did not report status=ready within ${timeoutMs}ms`)
+}
+
 function runCommand(command: string, args: string[], label: string): void {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
@@ -78,10 +98,33 @@ async function performGuestLogin(deviceUrl: string): Promise<void> {
   const context = await browser.newContext()
   const page = await context.newPage()
   try {
-    await page.goto(deviceUrl, { waitUntil: 'networkidle' })
-    const guestButton = page.getByTestId('guest-continue-button')
-    await guestButton.waitFor({ state: 'visible', timeout: 15_000 })
-    await guestButton.click()
+    await page.addInitScript(() => {
+      const globalWindow = window as typeof window & {
+        __powersyncForceEnable?: boolean
+        __powersyncUseFixturesOverride?: boolean
+        __skipSupabaseMock?: boolean
+      }
+      globalWindow.__powersyncForceEnable = true
+      globalWindow.__powersyncUseFixturesOverride = false
+      globalWindow.__skipSupabaseMock = true
+    })
+    await page.goto(deviceUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+    const email = (process.env.SUPABASE_EMAIL ?? '').trim()
+    const password = (process.env.SUPABASE_PASSWORD ?? '').trim()
+
+    if (email && password) {
+      const emailInput = page.getByPlaceholder('Email')
+      const passwordInput = page.getByPlaceholder('Password')
+      await emailInput.waitFor({ state: 'visible', timeout: 15_000 })
+      await emailInput.fill(email)
+      await passwordInput.fill(password)
+      await page.getByRole('button', { name: 'Sign In' }).click()
+      await page.getByText(/Daemon login in progress/i).waitFor({ timeout: 15_000 }).catch(() => {})
+    } else {
+      const guestButton = page.getByTestId('guest-continue-button')
+      await guestButton.waitFor({ state: 'visible', timeout: 15_000 })
+      await guestButton.click()
+    }
     await page.waitForTimeout(2_000)
   } finally {
     await context.close()
@@ -117,18 +160,31 @@ async function runDeviceLoginFlow(): Promise<void> {
       }
     }
 
+    let observedDeviceCode: string | null = null
+
     loginProc.stdout.on('data', (chunk) => {
       const text = chunk.toString()
       process.stdout.write(text)
-      if (!automationPromise) {
-        const urlMatch = text.match(/Open:\s+(https?:\/\/\S+)/)
-        if (urlMatch) {
-          const deviceUrl = urlMatch[1]
-          automationPromise = performGuestLogin(deviceUrl).catch((error) => {
-            console.error('[live-stack.setup] failed to automate device login', error)
-            throw error
-          })
-        }
+
+      if (automationPromise) return
+
+      const codeMatch = text.match(/Device code:\s*([A-Za-z0-9]+)/)
+      if (codeMatch) {
+        observedDeviceCode = codeMatch[1] ?? null
+      }
+
+      const baseLoginUrl =
+        process.env.POWERSYNC_DAEMON_DEVICE_URL ??
+        process.env.POWERSYNC_EXPLORER_URL ??
+        null
+
+      if (observedDeviceCode && baseLoginUrl) {
+        const separator = baseLoginUrl.includes('?') ? '&' : '?'
+        const deviceUrl = `${baseLoginUrl}${separator}device_code=${observedDeviceCode}`
+        automationPromise = performGuestLogin(deviceUrl).catch((error) => {
+          console.error('[live-stack.setup] failed to automate device login', error)
+          throw error
+        })
       }
     })
 
@@ -151,13 +207,109 @@ async function loginDaemonIfNeeded(): Promise<void> {
     process.env.POWERSYNC_DAEMON_URL ??
     process.env.POWERSYNC_DAEMON_ENDPOINT ??
     'http://127.0.0.1:5030'
-  const status = await fetch(`${daemonUrl.replace(/\/+$/, '')}/auth/status`)
-    .then(async (res) => (res.ok ? ((await res.json()) as { status?: string }) : null))
+  const daemonBase = daemonUrl.replace(/\/+$/, '')
+  const status = await fetch(`${daemonBase}/auth/status`)
+    .then(async (res) => (res.ok ? ((await res.json()) as { status?: string; context?: unknown }) : null))
     .catch(() => null)
+
   if (status?.status === 'ready') {
     return
   }
-  await runDeviceLoginFlow()
+
+  const endpoint = process.env.POWERSYNC_URL ?? process.env.VITE_POWERSYNC_ENDPOINT ?? null
+  const context =
+    status?.context && typeof status.context === 'object' && !Array.isArray(status.context)
+      ? (status.context as Record<string, unknown>)
+      : {}
+  const initialChallenge =
+    context.challengeId ??
+    context.deviceCode ??
+    (context as { device_code?: unknown }).device_code ??
+    (context as { state?: unknown }).state
+
+  let challengeId: string | null =
+    typeof initialChallenge === 'string' && initialChallenge.trim() ? initialChallenge.trim() : null
+
+  if (!challengeId) {
+    const challengeRes = await fetch(`${daemonBase}/auth/device`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+    })
+    if (!challengeRes.ok) {
+      const body = await challengeRes.text().catch(() => '')
+      throw new Error(`Failed to request daemon device challenge (${challengeRes.status}): ${body}`)
+    }
+    const challengePayload = (await challengeRes.json()) as { context?: unknown }
+    const challengeContext =
+      challengePayload.context && typeof challengePayload.context === 'object' && !Array.isArray(challengePayload.context)
+        ? (challengePayload.context as Record<string, unknown>)
+        : {}
+    const newChallenge =
+      challengeContext.challengeId ??
+      challengeContext.deviceCode ??
+      (challengeContext as { device_code?: unknown }).device_code ??
+      (challengeContext as { state?: unknown }).state
+    if (typeof newChallenge === 'string' && newChallenge.trim()) {
+      challengeId = newChallenge.trim()
+    }
+  }
+
+  if (!challengeId) {
+    throw new Error('Daemon did not provide a device challenge for login.')
+  }
+
+  const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '').replace(/\/+$/, '')
+  const anonKey = (process.env.SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '').trim()
+  const email = (process.env.SUPABASE_EMAIL ?? '').trim()
+  const password = (process.env.SUPABASE_PASSWORD ?? '').trim()
+  if (!supabaseUrl || !anonKey || !email || !password) {
+    throw new Error('Supabase credentials are required to authenticate the daemon in tests.')
+  }
+
+  const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: {
+      apikey: anonKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!tokenRes.ok) {
+    const body = await tokenRes.text().catch(() => '')
+    throw new Error(`Failed to sign into Supabase for daemon login (${tokenRes.status}): ${body}`)
+  }
+  const tokenPayload = (await tokenRes.json()) as {
+    access_token?: string
+    refresh_token?: string
+    expires_in?: number
+    expires_at?: number
+  }
+  const accessToken = tokenPayload.access_token?.trim() ?? ''
+  const refreshToken = tokenPayload.refresh_token?.trim() ?? ''
+  if (!accessToken || !refreshToken) {
+    throw new Error('Supabase did not return a valid session for daemon login.')
+  }
+  const authRes = await fetch(`${daemonBase}/auth/device`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challengeId,
+      endpoint,
+      session: {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expires_in: tokenPayload.expires_in ?? null,
+        expires_at: tokenPayload.expires_at ?? null,
+      },
+    }),
+  })
+  if (!authRes.ok) {
+    const body = await authRes.text().catch(() => '')
+    throw new Error(`Daemon rejected device login (${authRes.status}): ${body}`)
+  }
+
+  await waitForDaemonReady(daemonBase, STACK_START_TIMEOUT_MS)
 }
 
 function applyProfileEnvironment(): void {
@@ -178,14 +330,25 @@ function applyProfileEnvironment(): void {
 }
 
 function ensureDeviceLoginUrl(): void {
+  const host = DEFAULT_WEB_HOST.trim().length > 0 ? DEFAULT_WEB_HOST : 'localhost'
+  const port = DEFAULT_WEB_PORT && DEFAULT_WEB_PORT.trim().length > 0 ? DEFAULT_WEB_PORT : '5191'
+  const desired = `http://${host}:${port}/auth`
   const current = process.env.POWERSYNC_DAEMON_DEVICE_URL
-  if (current && current.trim().length > 0) {
+
+  if (!current || current.trim().length === 0) {
+    process.env.POWERSYNC_DAEMON_DEVICE_URL = desired
     return
   }
 
-  const host = DEFAULT_WEB_HOST.trim().length > 0 ? DEFAULT_WEB_HOST : 'localhost'
-  const port = DEFAULT_WEB_PORT && DEFAULT_WEB_PORT.trim().length > 0 ? DEFAULT_WEB_PORT : '5191'
-  process.env.POWERSYNC_DAEMON_DEVICE_URL = `http://${host}:${port}/auth`
+  try {
+    const currentUrl = new URL(current)
+    const desiredUrl = new URL(desired)
+    if (currentUrl.host !== desiredUrl.host || currentUrl.pathname !== desiredUrl.pathname) {
+      process.env.POWERSYNC_DAEMON_DEVICE_URL = desired
+    }
+  } catch {
+    process.env.POWERSYNC_DAEMON_DEVICE_URL = desired
+  }
 }
 
 function shouldManageLocalStack(): boolean {
@@ -202,6 +365,7 @@ test.describe('PowerSync dev stack (live)', () => {
   let startedBySuite = false
 
   test('ensure stack is running', async () => {
+    test.setTimeout(STACK_START_TIMEOUT_MS)
     applyProfileEnvironment()
     await loginDaemonIfNeeded()
 
