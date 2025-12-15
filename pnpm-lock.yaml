@@ -7,11 +7,11 @@ settings:
 overrides:
   '@tanstack/db': ^0.4.20
   '@tanstack/react-db': ^0.1.43
-  '@tanstack/powersync-db-collection': ^0.1.3
-  '@powersync/common': 1.41.0
-  '@powersync/node': 0.13.0
-  '@powersync/web': 1.28.0
-  '@powersync/react': 1.8.1
+  '@tanstack/powersync-db-collection': ^0.1.16
+  '@powersync/common': 1.44.0
+  '@powersync/node': 0.15.0
+  '@powersync/web': 1.30.0
+  '@powersync/react': 1.8.2
 
 importers:
 
@@ -55,20 +55,20 @@ importers:
         specifier: ^4.6.2
         version: 4.6.2
       '@journeyapps/wa-sqlite':
-        specifier: ^1.3.2
-        version: 1.3.3
+        specifier: ^1.4.1
+        version: 1.4.1
       '@monaco-editor/react':
         specifier: ^4.6.0
         version: 4.7.0(monaco-editor@0.54.0)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@powersync/common':
-        specifier: 1.41.0
-        version: 1.41.0
+        specifier: 1.44.0
+        version: 1.44.0
       '@powersync/react':
-        specifier: 1.8.1
-        version: 1.8.1(@powersync/common@1.41.0)(react@18.3.1)
+        specifier: 1.8.2
+        version: 1.8.2(@powersync/common@1.44.0)(react@18.3.1)
       '@powersync/web':
-        specifier: 1.28.0
-        version: 1.28.0(@journeyapps/wa-sqlite@1.3.3)(@powersync/common@1.41.0)
+        specifier: 1.30.0
+        version: 1.30.0(@journeyapps/wa-sqlite@1.4.1)(@powersync/common@1.44.0)
       '@supabase/supabase-js':
         specifier: ^2.48.1
         version: 2.80.0
@@ -76,8 +76,8 @@ importers:
         specifier: ^0.4.20
         version: 0.4.20(typescript@5.9.3)
       '@tanstack/powersync-db-collection':
-        specifier: ^0.1.3
-        version: 0.1.3(@powersync/common@1.41.0)(typescript@5.9.3)
+        specifier: ^0.1.16
+        version: 0.1.16(@powersync/common@1.44.0)(typescript@5.9.3)
       '@tanstack/react-db':
         specifier: ^0.1.43
         version: 0.1.43(react@18.3.1)(typescript@5.9.3)
@@ -176,11 +176,11 @@ importers:
   packages/cli:
     dependencies:
       '@powersync/common':
-        specifier: 1.41.0
-        version: 1.41.0
+        specifier: 1.44.0
+        version: 1.44.0
       '@powersync/node':
-        specifier: 0.13.0
-        version: 0.13.0(@powersync/common@1.41.0)(better-sqlite3@12.4.1)
+        specifier: 0.15.0
+        version: 0.15.0(@powersync/common@1.44.0)(better-sqlite3@12.4.1)
       '@shared/core':
         specifier: workspace:*
         version: link:../shared
@@ -219,11 +219,11 @@ importers:
   packages/daemon:
     dependencies:
       '@powersync/common':
-        specifier: 1.41.0
-        version: 1.41.0
+        specifier: 1.44.0
+        version: 1.44.0
       '@powersync/node':
-        specifier: 0.13.0
-        version: 0.13.0(@powersync/common@1.41.0)(better-sqlite3@12.4.1)
+        specifier: 0.15.0
+        version: 0.15.0(@powersync/common@1.44.0)(better-sqlite3@12.4.1)
       '@shared/core':
         specifier: workspace:*
         version: link:../shared
@@ -585,8 +585,8 @@ packages:
     resolution: {integrity: sha512-RS/oa1UBnoUFe56bsjOEgoUUReYKQzYUlQnbERRRNv9s9KmjyWuuylPV+YgsWirR2oONKaipWYMebVQ8SAe55Q==}
     hasBin: true
 
-  '@journeyapps/wa-sqlite@1.3.3':
-    resolution: {integrity: sha512-LwekcI0eSLVwNTt6r5j2GdYfA4aCCRnRmVhnrIRz6Tet8Ih6OPqQ4ae6xYXFBGTpw54jexHqwMcOQFTOOvTNIw==}
+  '@journeyapps/wa-sqlite@1.4.1':
+    resolution: {integrity: sha512-xAWys6opteBpWaKmHG1pZvBmQViEKFK/46YVEkYlWxa4F9VAG0gIjCpfIdcQvXdqZf7X3ByADGmNBcR/cJ1DqQ==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -625,30 +625,30 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@powersync/common@1.41.0':
-    resolution: {integrity: sha512-N5Tpp2QU0RnP9eEDu+/Ok/IccSk8sNxnCBQgByEHg+DAHvSeSpIFe4nDSZwaRJrcltKi/FMzzjSIBjFrtsUz/g==}
+  '@powersync/common@1.44.0':
+    resolution: {integrity: sha512-vdjSKJzXtjnenOT4EFRcTpQQ8MFV8+0KA+sf7GBVEo7zy6cg7SpQSv5AjdyX/CivOolMosjsV6Xk3WP9e7djBw==}
 
-  '@powersync/node@0.13.0':
-    resolution: {integrity: sha512-G/vVkQjQsyQ41213atf0/b+Z0kQwSjKPdQ+3Og0wRnIS6ul8nBKPAsd1wbPh7dXetoOicKPnFY3Bso4YIGAmLw==}
+  '@powersync/node@0.15.0':
+    resolution: {integrity: sha512-uDGuuiaLzsu30NV+ks4FvuOviuwt3OvrjGPkg/J24h61kB/K9vUf4X1NZlBmfhtZLxOjNfA31H1yU+ZbEKRlUA==}
     peerDependencies:
-      '@powersync/common': 1.41.0
+      '@powersync/common': 1.44.0
       better-sqlite3: 12.x
     peerDependenciesMeta:
       better-sqlite3:
         optional: true
 
-  '@powersync/react@1.8.1':
-    resolution: {integrity: sha512-ITrHeXahrsqe1IA6WRoaIGIVYg5gZpDiSNZqjO6jvXoS2hTTYhCShNfn5t38lor9mpooISBjxTFHLy/k7Nh5yQ==}
+  '@powersync/react@1.8.2':
+    resolution: {integrity: sha512-15z8JKt66dq2bqX2P7QQ71eUIx3DWLc5WMdB/PDc9MIAHf1SERqKfzbzWGxKplQGHC/GogDA7G8IDoRadhNXOA==}
     peerDependencies:
-      '@powersync/common': 1.41.0
+      '@powersync/common': 1.44.0
       react: '*'
 
-  '@powersync/web@1.28.0':
-    resolution: {integrity: sha512-0cwCNJBz0l9gn165wJIcpc0zaDrEf4CkFbPVR3qKFayLhaf1/HvbvOHD/bLtL2q5TZ8FdvubiK4ad2+Y0k09jA==}
+  '@powersync/web@1.30.0':
+    resolution: {integrity: sha512-ZlNNOHB0Ao5nYu+G3avbe8z8jAgMSlBNf+wHa5YI8cTYyfIEldVMGQCMWWbo74QBJfMKjBQTlhaUAHhcXzTyaQ==}
     hasBin: true
     peerDependencies:
-      '@journeyapps/wa-sqlite': ^1.3.2
-      '@powersync/common': 1.41.0
+      '@journeyapps/wa-sqlite': ^1.4.0
+      '@powersync/common': 1.44.0
 
   '@rolldown/pluginutils@1.0.0-beta.43':
     resolution: {integrity: sha512-5Uxg7fQUCmfhax7FJke2+8B6cqgeUJUD9o2uXIKXhD+mG0mL6NObmVoi9wXEU1tY89mZKgAYA6fTbftx3q2ZPQ==}
@@ -988,10 +988,10 @@ packages:
     resolution: {integrity: sha512-QVzkGO5clvGj/qdX8H2wUj0QCXCLZ/pwPMnfSqhoYfpzDRkRHDj+3D+VzdcehBIVnE+GCd1D/P1tGMzfjmfrzQ==}
     engines: {node: '>=18'}
 
-  '@tanstack/powersync-db-collection@0.1.3':
-    resolution: {integrity: sha512-mJ+Yv7wCErfc7vyAR6sl+v3NcPhJFbbBc79G/qcftgUXSQDLOpsh+63z01uhW+DlVP6joSznTw8+POKErMvweg==}
+  '@tanstack/powersync-db-collection@0.1.16':
+    resolution: {integrity: sha512-fhH1J3zngoQA/iFHAnTjLZjIiDxB5WcasjWv1UrYQFp82W9kTDaCasPQ3wE/dTn5jaJ0VfJrPt6sIJ+nKv1u7w==}
     peerDependencies:
-      '@powersync/common': 1.41.0
+      '@powersync/common': 1.44.0
 
   '@tanstack/react-db@0.1.43':
     resolution: {integrity: sha512-r05HfvEKLqKXwPcqAG2TwB4KOmrLVpPzSMhdfVRrvSZebirucsnJjZ4+7nP6dnavFETzhXDES+sABLw6HEz8NA==}
@@ -1214,8 +1214,8 @@ packages:
   async-lock@1.4.1:
     resolution: {integrity: sha512-Az2ZTpuytrtqENulXwO3GGv1Bztugx6TT37NIo7imr/Qo0gsYiGtSdBa2B6fsXhTpVZDNfu1Qn3pk531e3q+nQ==}
 
-  async-mutex@0.4.1:
-    resolution: {integrity: sha512-WfoBo4E/TbCX1G95XTjbWTE3X2XLG0m1Xbv2cwOtuPdyH9CZvnaA5nCt1ucjaKEgW2A5IF71hxrRhr83Je5xjA==}
+  async-mutex@0.5.0:
+    resolution: {integrity: sha512-1A94B18jkJ3DYq284ohPxoXbfTA5HsQ7/Mf4DEhcyLx3Bz27Rh59iScbB6EPiP+B+joue6YCxcMXSbFC1tZKwA==}
 
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
@@ -1525,6 +1525,9 @@ packages:
 
   estree-walker@3.0.3:
     resolution: {integrity: sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==}
+
+  event-iterator@2.0.0:
+    resolution: {integrity: sha512-KGft0ldl31BZVV//jj+IAIGCxkvvUkkON+ScH6zfoX+l+omX6001ggyRSpI0Io2Hlro0ThXotswCtfzS8UkIiQ==}
 
   expand-template@2.0.3:
     resolution: {integrity: sha512-XYfuKMvj4O35f/pOXLObndIRvyQ+/+6AhODh+OKWj9S9498pHHn/IMszH+gt0fBCRWMNfk1ZSp5x3AifmnI2vg==}
@@ -1839,9 +1842,6 @@ packages:
   jiti@2.6.1:
     resolution: {integrity: sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ==}
     hasBin: true
-
-  js-logger@1.6.1:
-    resolution: {integrity: sha512-yTgMCPXVjhmg28CuUH8CKjU+cIKL/G+zTu4Fn4lQxs8mRFH/03QTNvEFngcxfg/gRDiQAOoyCKmMTOm9ayOzXA==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -3220,7 +3220,7 @@ snapshots:
       just-debounce-it: 1.1.0
       just-once: 1.1.0
 
-  '@journeyapps/wa-sqlite@1.3.3': {}
+  '@journeyapps/wa-sqlite@1.4.1': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
@@ -3264,30 +3264,31 @@ snapshots:
     dependencies:
       playwright: 1.56.1
 
-  '@powersync/common@1.41.0':
+  '@powersync/common@1.44.0':
     dependencies:
-      js-logger: 1.6.1
+      async-mutex: 0.5.0
+      event-iterator: 2.0.0
 
-  '@powersync/node@0.13.0(@powersync/common@1.41.0)(better-sqlite3@12.4.1)':
+  '@powersync/node@0.15.0(@powersync/common@1.44.0)(better-sqlite3@12.4.1)':
     dependencies:
-      '@powersync/common': 1.41.0
-      async-lock: 1.4.1
+      '@powersync/common': 1.44.0
+      async-mutex: 0.5.0
       bson: 6.10.4
       comlink: 4.4.2
       undici: 7.16.0
     optionalDependencies:
       better-sqlite3: 12.4.1
 
-  '@powersync/react@1.8.1(@powersync/common@1.41.0)(react@18.3.1)':
+  '@powersync/react@1.8.2(@powersync/common@1.44.0)(react@18.3.1)':
     dependencies:
-      '@powersync/common': 1.41.0
+      '@powersync/common': 1.44.0
       react: 18.3.1
 
-  '@powersync/web@1.28.0(@journeyapps/wa-sqlite@1.3.3)(@powersync/common@1.41.0)':
+  '@powersync/web@1.30.0(@journeyapps/wa-sqlite@1.4.1)(@powersync/common@1.44.0)':
     dependencies:
-      '@journeyapps/wa-sqlite': 1.3.3
-      '@powersync/common': 1.41.0
-      async-mutex: 0.4.1
+      '@journeyapps/wa-sqlite': 1.4.1
+      '@powersync/common': 1.44.0
+      async-mutex: 0.5.0
       bson: 6.10.4
       comlink: 4.4.2
       commander: 12.1.0
@@ -3548,9 +3549,9 @@ snapshots:
 
   '@tanstack/pacer@0.1.0': {}
 
-  '@tanstack/powersync-db-collection@0.1.3(@powersync/common@1.41.0)(typescript@5.9.3)':
+  '@tanstack/powersync-db-collection@0.1.16(@powersync/common@1.44.0)(typescript@5.9.3)':
     dependencies:
-      '@powersync/common': 1.41.0
+      '@powersync/common': 1.44.0
       '@standard-schema/spec': 1.0.0
       '@tanstack/db': 0.4.20(typescript@5.9.3)
       '@tanstack/store': 0.8.0
@@ -3842,7 +3843,7 @@ snapshots:
 
   async-lock@1.4.1: {}
 
-  async-mutex@0.4.1:
+  async-mutex@0.5.0:
     dependencies:
       tslib: 2.8.1
 
@@ -4173,6 +4174,8 @@ snapshots:
   estree-walker@3.0.3:
     dependencies:
       '@types/estree': 1.0.8
+
+  event-iterator@2.0.0: {}
 
   expand-template@2.0.3: {}
 
@@ -4526,8 +4529,6 @@ snapshots:
       fast-text-encoding: 1.0.6
 
   jiti@2.6.1: {}
-
-  js-logger@1.6.1: {}
 
   js-tokens@4.0.0: {}
 

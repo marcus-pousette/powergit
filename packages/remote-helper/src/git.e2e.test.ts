@@ -197,7 +197,34 @@ describeIfSupabase('git push/fetch via PowerSync remote helper', () => {
       if (!res || !res.ok) return []
       const payload = (await res.json().catch(() => null)) as { streams?: unknown } | null
       if (!payload || !Array.isArray(payload.streams)) return []
-      return payload.streams.filter((value): value is string => typeof value === 'string' && value.length > 0)
+      return payload.streams
+        .map((entry) => {
+          if (typeof entry === 'string') {
+            const trimmed = entry.trim()
+            return trimmed.length > 0 ? trimmed : null
+          }
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+          const record = entry as {
+            id?: unknown
+            stream?: unknown
+            parameters?: unknown
+            params?: unknown
+          }
+          const id =
+            typeof record.id === 'string'
+              ? record.id
+              : typeof record.stream === 'string'
+                ? record.stream
+                : ''
+          const trimmedId = id.trim()
+          if (!trimmedId) return null
+          const rawParams = record.parameters ?? record.params ?? null
+          if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
+            return trimmedId
+          }
+          return formatStreamKey({ id: trimmedId, parameters: rawParams as any })
+        })
+        .filter((value): value is string => Boolean(value))
     }
 
     const initialStreams = await listStreams()

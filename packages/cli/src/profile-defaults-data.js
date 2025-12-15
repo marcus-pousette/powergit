@@ -19,12 +19,12 @@ export const PROFILE_DEFAULTS = {
   },
   prod: {
     powersync: {
-      url: 'https://68f143d248cadbdadc3eef16.powersync.journeyapps.com',
+      url: 'https://69330b17af0dc7f75977d41a.powersync.journeyapps.com',
     },
     supabase: {
-      url: 'https://mcvxpinhffmvwutgsdua.supabase.co',
+      url: 'https://swycjfithtzfzwwekmnq.supabase.co',
       anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jdnhwaW5oZmZtdnd1dGdzZHVhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc3MDgwOTYsImV4cCI6MjA3MzI4NDA5Nn0.GxoIKA3hFmF3Gr86hwHBEoapEh2kCRnRIDMiNoSsX5Q',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN3eWNqZml0aHR6Znp3d2VrbW5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4ODY1OTIsImV4cCI6MjA4MDQ2MjU5Mn0.XDfUuXI_DLGQnANxxw4slv0-9PrvZzT72ZaxBMuxA9U',
     },
   },
 }

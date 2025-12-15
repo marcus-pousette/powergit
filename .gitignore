@@ -11,3 +11,4 @@ out
 repo-explorer.db
 tmp
 **/test-reults/*
+logs/
