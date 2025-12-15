@@ -43,7 +43,6 @@ function resolvePowerSyncDisabled(): boolean {
 }
 
 const isPowerSyncDisabled = resolvePowerSyncDisabled()
-const isMultiTabCapable = false
 
 const PLACEHOLDER_VALUES = new Set([
   'dev-token-placeholder',
@@ -70,13 +69,30 @@ function readEnvString(name: string): string | null {
 
 let pendingPowerSyncClose: Promise<unknown> | null = null
 
-async function waitForPendingPowerSyncClose(): Promise<void> {
+async function waitForPendingPowerSyncClose(timeoutMs = 10_000): Promise<void> {
   if (!pendingPowerSyncClose) return
+  const pending = pendingPowerSyncClose
   try {
-    await pendingPowerSyncClose
+    const result = await Promise.race([
+      pending.then(() => 'closed' as const),
+      new Promise<'timeout'>((resolve) => {
+        setTimeout(() => resolve('timeout'), timeoutMs)
+      }),
+    ])
+    if (result === 'timeout') {
+      if (import.meta.env.DEV) {
+        console.debug('[PowerSync] pending close timed out; continuing without waiting')
+      }
+      if (pendingPowerSyncClose === pending) {
+        pendingPowerSyncClose = null
+      }
+    }
   } catch (error) {
     if (import.meta.env.DEV) {
       console.debug('[PowerSync] pending close rejected', error)
+    }
+    if (pendingPowerSyncClose === pending) {
+      pendingPowerSyncClose = null
     }
   }
 }
@@ -87,6 +103,29 @@ function isSchemaMismatchError(error: unknown): boolean {
   if (!message) return false
   const normalized = message.toLowerCase()
   return normalized.includes('powersync_drop_view') || normalized.includes('powersync_replace_schema')
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(timeoutMessage))
+    }, timeoutMs)
+  })
+
+  try {
+    return (await Promise.race([promise, timeout])) as T
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+    }
+  }
 }
 
 export interface DaemonAuthSnapshot {
@@ -109,9 +148,7 @@ export function createPowerSync() {
     },
     flags: {
       disableSSRWarning: true,
-      enableMultiTabs: false,
-      useWebWorker: supportsWorker && isMultiTabCapable,
-      externallyUnload: true,
+      ...(supportsWorker ? {} : { useWebWorker: false }),
     },
   })
   if (import.meta.env.DEV) {
@@ -137,7 +174,7 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
     if (import.meta.env.DEV) {
       console.debug('[PowerSync] closeDatabase invoked')
     }
-    const closePromise = powerSync.close({ disconnect: true }).catch((error) => {
+    const closePromise = powerSync.close().catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       if (message.toLowerCase().includes('closed')) return
       console.warn('[PowerSync] failed to close database', error)
@@ -352,24 +389,59 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
       },
     })
 
-    const connect = async (attempt = 0): Promise<void> => {
-      try {
-        if (import.meta.env.DEV) {
-          console.debug('[PowerSyncProvider] connecting', { preferDaemon, daemonReady, hasAccessToken: !!accessToken })
+    const INIT_TIMEOUT_MS = 20_000
+    const CONNECT_TIMEOUT_MS = 30_000
+
+    const connectOnce = async (attempt: number): Promise<void> => {
+      if (import.meta.env.DEV) {
+        console.debug('[PowerSyncProvider] connecting', {
+          preferDaemon,
+          daemonReady,
+          hasAccessToken: !!accessToken,
+          attempt,
+        })
+      }
+
+      await waitForPendingPowerSyncClose()
+      await withTimeout(powerSync.init(), INIT_TIMEOUT_MS, 'PowerSync init timed out.')
+      await withTimeout(
+        powerSync.connect(connector, { clientImplementation: SyncClientImplementation.RUST }),
+        CONNECT_TIMEOUT_MS,
+        'PowerSync connect timed out.',
+      )
+
+      if (import.meta.env.DEV) {
+        const options = powerSync.connectionOptions
+        console.debug('[PowerSyncProvider] connect resolved', {
+          status: powerSync.currentStatus.toJSON(),
+          connectionOptions: options ?? null,
+        })
+      }
+    }
+
+    const ensureConnected = async (): Promise<void> => {
+      let attempt = 0
+      while (!disposed) {
+        const currentStatus = powerSync.currentStatus.toJSON()
+        if (currentStatus.connected) {
+          attempt = 0
+          await delay(5_000)
+          continue
         }
-        await waitForPendingPowerSyncClose()
-        await powerSync.init()
-        await powerSync.connect(connector, { clientImplementation: SyncClientImplementation.RUST })
-        if (import.meta.env.DEV) {
-          const options = powerSync.connectionOptions
-          console.debug('[PowerSyncProvider] connect resolved', {
-            status: powerSync.currentStatus.toJSON(),
-            connectionOptions: options ?? null,
-          })
+        if (currentStatus.connecting) {
+          await delay(500)
+          continue
         }
-      } catch (error) {
-        if (!disposed) {
-          if (attempt === 0 && isSchemaMismatchError(error)) {
+
+        attempt += 1
+        try {
+          await connectOnce(attempt)
+          attempt = 0
+          continue
+        } catch (error) {
+          if (disposed) return
+
+          if (attempt === 1 && isSchemaMismatchError(error)) {
             console.warn('[PowerSync] schema mismatch detected; clearing local cache and retrying')
             const disconnectAndClear = (powerSync as unknown as {
               disconnectAndClear?: (options: { clearLocal?: boolean }) => Promise<void>
@@ -387,23 +459,22 @@ export const PowerSyncProvider: React.FC<React.PropsWithChildren> = ({ children 
                 console.error('[PowerSync] failed to close database after schema mismatch', closeError)
               }
             }
-            try {
-              await waitForPendingPowerSyncClose()
-              await powerSync.init()
-            } catch (initError) {
-              console.error('[PowerSync] failed to reinitialise PowerSync after clearing replica', initError)
-            }
-            if (!disposed) {
-              await connect(attempt + 1)
-            }
-            return
+
+            attempt = 0
+            await delay(250)
+            continue
           }
+
           console.error('[PowerSync] failed to connect', error)
+
+          const baseDelayMs = 500 * 2 ** Math.min(attempt - 1, 6)
+          const delayMs = Math.min(30_000, baseDelayMs)
+          await delay(delayMs)
         }
       }
     }
 
-    void connect()
+    void ensureConnected()
 
     return () => {
       disposed = true
