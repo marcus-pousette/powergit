@@ -17,13 +17,18 @@ pnpm install
 pnpm dev:prod   
 ```
 
-> Requires Docker to be running for the PowerSync + Supabase stack.
+> `pnpm dev:prod` uses `.env.prod` (remote Supabase/PowerSync). Use `pnpm dev:stack` if you want a local Docker-backed stack.
+
+## Docs
+
+- Supabase + PowerSync setup: `docs/supabase.md`
+- Profiles (local-dev / prod / staging): `docs/profiles/remote.example.md`
 
 ## Daemonless GitHub Actions flow (prod-mode)
 
 If you want to trigger the GitHub Actions workflow instead of the local daemon:
 
-1. Copy `.env.github.example` to `.env.github` and set `TOKEN`, `GITHUB_REPO_OWNER`, and `GITHUB_REPO_NAME`.
+1. Create `supabase/.env` (gitignored) and set `TOKEN`, `GITHUB_REPO_OWNER`, and `GITHUB_REPO_NAME` (you can start from `.env.github.example`).
 2. Start the local stack: `pnpm dev:stack:up` (Edge Functions are available at `http://127.0.0.1:55431/functions/v1`).
 3. Run the explorer in prod mode: `pnpm dev:prod` (uses the Edge Function dispatcher, not the daemon).
 4. Paste a GitHub repo URL in the UI; this calls the `github-import` Edge Function, which dispatches the `clone-and-push.yml` workflow with your token. Watch the run in GitHub Actions to confirm it fired.

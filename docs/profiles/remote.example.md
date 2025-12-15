@@ -27,7 +27,7 @@ STACK_PROFILE=staging pnpm live:validate
 
 # When switching to a new profile, authenticate the local daemon via Supabase
 # (prompts a device-code flow that reuses ~/.psgit storage):
-STACK_PROFILE=staging pnpm --filter @pkg/cli cli login
+STACK_PROFILE=staging pnpm --filter @pkg/cli login
 
 # Build the explorer bundle against production defaults
 STACK_PROFILE=prod pnpm --filter @app/explorer build

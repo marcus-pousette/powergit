@@ -1,77 +1,80 @@
-# Supabase Integration
+# Supabase + PowerSync
 
-The PowerSync-first architecture stores Git metadata in Supabase while the PowerSync daemon synchronises changes between the local replica and Supabase. The daemon now owns all Supabase connectivity—credential exchange, CRUD uploads, and storage mirroring—so no Supabase edge functions are required anywhere in the toolchain.
+Powergit stores Git metadata in Supabase Postgres and streams it to clients via PowerSync. The explorer reads from the local PowerSync replica (browser SQLite) so the UI stays fast and keeps working offline after the first sync.
 
-## Environment Variables
+## What we store
 
-| Variable | Description |
-| --- | --- |
-| `VITE_SUPABASE_URL` | Supabase project URL used by the explorer (e.g. `https://xyzcompany.supabase.co`). |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon/public key that the browser can embed. |
-| `VITE_SUPABASE_SCHEMA` | Optional schema override for browser reads (defaults to `public`). |
-| `SUPABASE_URL` | Supabase project URL used by the daemon/CLI for server-side access. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role key consumed by the daemon’s Supabase writer. |
-| `SUPABASE_EMAIL` | Supabase user email used by the CLI/daemon for password-based login in development. |
-| `SUPABASE_PASSWORD` | Matching Supabase user password; exported automatically by `pnpm dev:stack`. |
-| `SUPABASE_JWT_SECRET` | The Supabase JWT secret required by the PowerSync service and daemon. |
-| `POWERSYNC_DAEMON_DEVICE_URL` | Optional verification URL the daemon prints for device flows (e.g. `http://localhost:5783/auth`). |
-| `POWERSYNC_DAEMON_DEVICE_AUTO_LAUNCH` | When `true`, the daemon attempts to open the verification URL in the default browser. |
-| `POWERSYNC_DAEMON_DEVICE_TTL_MS` | Override (in milliseconds) for how long a device challenge remains valid (default 5 minutes). |
+- **Tables (Supabase Postgres):** `refs`, `commits`, `file_changes`, `objects`, `repositories`, `import_jobs`
+- **Storage:** pack bytes live in Supabase Storage (default bucket `git-packs`); `objects.storage_key` points to the blob
 
-## Local Development
+## Local development (recommended)
 
-1. Apply the latest migrations (`supabase db push`). This targets the local stack if it is already running, or your linked Supabase project otherwise and ensures the `refs`, `commits`, `file_changes`, and `objects` tables exist.
-2. Start the combined Supabase + PowerSync stack:
+1. Start the local stack:
+
    ```bash
    pnpm dev:stack
    ```
-   The script launches the Supabase containers, bootstraps the PowerSync services, ensures a development Supabase user exists, and synchronises those credentials into the `local-dev` profile stored under `~/.psgit` (override with `PSGIT_HOME` when you need an isolated config directory). Use `--print-exports` if you need shell exports; otherwise the profile provides everything the CLI, explorer, and tests need.
-3. Profiles are refreshed automatically. Run `psgit profile list` to confirm the active profile (default is `local-dev`). Override ad‑hoc with `STACK_PROFILE=staging pnpm --filter @pkg/cli sync` (or similar) when targeting a remote environment.
-4. Start the device flow so `psgit` and the daemon can reuse a Supabase-issued JWT:
-   ```bash
-   pnpm --filter @pkg/cli login
-   ```
-   The CLI prints a device code and, when `POWERSYNC_DAEMON_DEVICE_URL` is set, a ready-to-click URL. Visit the URL in a browser (the explorer exposes `/auth?device_code=…` for development at `http://localhost:5783`), sign in with the Supabase credentials exported by `pnpm dev:stack`, and the daemon will persist the resulting token.
 
-5. Launch the explorer with the desired profile (`pnpm dev` for local, `STACK_PROFILE=staging pnpm --filter @app/explorer dev` for remote). Playwright helpers are available via `pnpm --filter @app/explorer test:e2e:local` or `pnpm --filter @app/explorer test:e2e:staging`. The explorer automatically completes pending device challenges when the user signs in, so you can re-run `psgit login` later without leaving the browser.
+   This runs `supabase start`, starts the local PowerSync service, ensures the schema from `supabase/schema.sql` is applied, seeds PowerSync sync rules from `supabase/powersync/sync-rules.yaml`, and syncs a `local-dev` profile into `~/.psgit/profiles.json`.
 
-When you are done, run `pnpm dev:stack stop` (or `supabase stop`) to shut everything down.
-
-## Production Notes
-
-- Follow the official [Supabase + PowerSync guide](https://docs.powersync.com/integration-guides/supabase-+-powersync) for hosted environments.
-- The daemon requires a Supabase service-role key (or service token) so it can persist refs, commits, and objects without exposing credentials to end users.
-- In CI or other headless contexts, set `POWERSYNC_SERVICE_KEY` (or equivalent) so the daemon can authenticate without launching an interactive browser flow.
-
-## Live Supabase Validation Run
-
-Once you have a remote Supabase project populated with the PowerSync schema, you can exercise the full CLI workflow against it:
-
-1. Export the following environment variables (their values should point at your hosted Supabase + PowerSync deployment):
-
-   | Variable | Description |
-   | --- | --- |
-   | `PSGIT_TEST_REMOTE_URL` | `powersync::https://…/orgs/<org>/repos/<repo>` remote used for the round-trip test. |
-   | `PSGIT_TEST_REMOTE_NAME` | Optional Git remote name override (defaults to `powersync`). |
-   | `PSGIT_TEST_SUPABASE_URL` | Supabase project URL. |
-   | `PSGIT_TEST_SUPABASE_EMAIL` | Supabase user email with permission to push refs. |
-   | `PSGIT_TEST_SUPABASE_PASSWORD` | Matching Supabase user password. |
-   | `PSGIT_TEST_ENDPOINT` | Optional PowerSync endpoint override (falls back to the one embedded in the remote URL). |
-
-2. Run the validation suite:
+2. Start the explorer against the local stack:
 
    ```bash
-   pnpm live:validate
+   pnpm dev
    ```
 
-   The script verifies the required environment variables and then executes `pnpm --filter @pkg/cli test -- --run src/cli.e2e.test.ts`, exercising the daemon-mediated fetch/push path against your live Supabase project. The output lists each step (remote add, sync, logout) along with any failures.
-
-3. When you are finished, clear Supabase credentials if needed:
+3. Stop everything when you’re done:
 
    ```bash
-   pnpm --filter @pkg/cli logout
+   pnpm dev:stack stop
    ```
 
-## Rotating Supabase Auth to RS256 (Optional)
+### Device login (sharing a Supabase token)
 
-The local stack and CLI default to Supabase’s HS256 tokens. If you later rotate your Supabase project to RS256, follow the official Supabase guidance and make sure PowerSync can fetch the new JWKS. After Supabase serves the RS256 keys, restart the PowerSync service so it reloads the configuration, then confirm that a fresh Supabase login works end-to-end.
+When you need the daemon + browser to share a Supabase-issued token (useful for tests and some auth flows):
+
+```bash
+pnpm --filter @pkg/cli login
+```
+
+The CLI prints a device code and a verification URL (`POWERSYNC_DAEMON_DEVICE_URL`, default `http://localhost:5783/auth`). Open it, sign in, and the token is stored under `~/.psgit`.
+
+## Daemonless import (GitHub Actions + Edge Function)
+
+For prod-like imports where the browser dispatches a GitHub Action (instead of using the local daemon), we use a Supabase Edge Function (`supabase/functions/github-import`) that triggers `.github/workflows/clone-and-push.yml`.
+
+Local setup:
+
+1. Create `supabase/.env` (not committed) with the GitHub workflow dispatch settings (copy from `.env.github.example`).
+2. Start the stack (`pnpm dev:stack`). The script auto-starts `supabase functions serve` if `supabase/.env` exists.
+3. Run the explorer in prod-mode locally:
+
+   ```bash
+   pnpm dev:prod
+   ```
+
+## Production checklist
+
+These are the “must match” pieces between Supabase, PowerSync, and the explorer build:
+
+1. **Database schema/migrations:** `pnpm prod:migrate` (applies `supabase/migrations/*`, including the PowerSync publication updates for `repositories` / `import_jobs`).
+2. **PowerSync sync rules:** deploy `supabase/powersync/sync-rules.yaml` to your PowerSync instance (dashboard).
+3. **Edge function:** `pnpm prod:supabase:functions:deploy:github-import` (if you use the GitHub Actions import path).
+4. **Explorer build-time env:** set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_POWERSYNC_ENDPOINT` in your hosting environment.
+5. **GitHub secrets (if using our workflows):**
+   - Pages build (`.github/workflows/pages.yml`): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `POWERSYNC_URL`
+   - Import workflow (`.github/workflows/clone-and-push.yml`): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `POWERGIT_EMAIL`, `POWERGIT_PASSWORD` (and optionally `POWERSYNC_EDGE_BASE_URL`)
+
+## Troubleshooting
+
+- **Explorer shows “Offline” / no repos:** confirm `VITE_POWERSYNC_ENDPOINT` points at the correct PowerSync URL and the user has a valid token.
+- **Tables exist in Supabase but don’t appear in the UI:** ensure the PowerSync publication includes the tables (see `supabase/migrations/*`) and your deployed PowerSync sync rules include `repositories` + `import_jobs`.
+- **Local stack port conflicts:** `pnpm dev:stack` respects `SUPABASE_API_PORT` / `SUPABASE_PORT` and `POWERSYNC_PORT` (see `scripts/dev-local-stack.mjs`).
+
+## Environment variable reference
+
+Most users should rely on profiles + `.env.local` / `.env.prod`. These are the main knobs:
+
+- **Browser:** `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_POWERSYNC_ENDPOINT`, `VITE_POWERSYNC_USE_DAEMON`
+- **Daemon/CI:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `POWERSYNC_URL`
+- **GitHub Actions import path:** `VITE_POWERSYNC_EDGE_BASE_URL` (optional override), plus Edge Function secrets in `supabase/.env`
